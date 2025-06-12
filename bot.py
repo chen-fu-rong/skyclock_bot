@@ -93,3 +93,7 @@ if __name__ == "__main__":
     asyncio.run(main())
 
     uvicorn.run(app, host="0.0.0.0", port=PORT)
+
+@app.get("/")
+async def root():
+    return {"message": "SkyClock Bot is running!"}
