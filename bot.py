@@ -15,14 +15,11 @@ app = FastAPI()
 
 application = ApplicationBuilder().token(BOT_TOKEN).build()
 
-# Chat ID storage helpers omitted for brevity...
-
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"Hello {update.effective_user.first_name}, welcome!")
 
 application.add_handler(CommandHandler("start", start))
 
-# Background task to process updates in the queue
 async def process_updates():
     while True:
         update = await application.update_queue.get()
@@ -33,15 +30,28 @@ async def process_updates():
 
 @app.on_event("startup")
 async def startup_event():
-    # Start the background update processor task
+    # Initialize and start application
+    await application.initialize()
+    await application.start()
+
+    # Start background task for processing updates
     asyncio.create_task(process_updates())
+
+    # Set webhook on startup
+    webhook_url = f"https://{os.getenv('RENDER_EXTERNAL_HOSTNAME')}{WEBHOOK_PATH}"
+    await application.bot.set_webhook(webhook_url)
+    logging.info(f"Webhook set to {webhook_url}")
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    await application.stop()
+    await application.shutdown()
 
 @app.post(WEBHOOK_PATH)
 async def webhook(request: Request):
     data = await request.json()
     logging.info(f"Received update: {data}")
     update = Update.de_json(data, application.bot)
-    # Put the update in the application queue for processing by background task
     await application.update_queue.put(update)
     return {"ok": True}
 
@@ -51,12 +61,4 @@ async def root():
 
 if __name__ == "__main__":
     import uvicorn
-    # Setup webhook on startup (optional)
-    async def main():
-        webhook_url = f"https://{os.getenv('RENDER_EXTERNAL_HOSTNAME')}{WEBHOOK_PATH}"
-        await application.bot.set_webhook(webhook_url)
-        config = uvicorn.Config(app, host="0.0.0.0", port=PORT, log_level="info")
-        server = uvicorn.Server(config)
-        await server.serve()
-
-    asyncio.run(main())
+    uvicorn.run(app, host="0.0.0.0", port=PORT)
