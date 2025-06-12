@@ -77,7 +77,8 @@ telegram_app.add_handler(CommandHandler("broadcast", broadcast))
 @app.post(WEBHOOK_PATH)
 async def telegram_webhook(request: Request):
     data = await request.json()
-    await telegram_app.update_queue.put(Update.de_json(data, telegram_app.bot))
+    update = Update.de_json(data, telegram_app.bot)
+    await telegram_app.process_update(update)
     return {"status": "ok"}
 
 # === Start the Webhook Server ===
