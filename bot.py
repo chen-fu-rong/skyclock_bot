@@ -6,18 +6,24 @@ from telegram.ext import (
     CommandHandler,
     ContextTypes,
 )
+from fastapi import FastAPI, Request
+import uvicorn
 
-# ===== CONFIG =====
-BOT_TOKEN = os.getenv("BOT_TOKEN") or "YOUR_BOT_TOKEN"  # Replace or use env var
-ADMIN_ID = 123456789  # Replace with your Telegram user ID
+# === CONFIG ===
+BOT_TOKEN = os.getenv("BOT_TOKEN") or "YOUR_BOT_TOKEN"
+ADMIN_ID = int(os.getenv("ADMIN_ID") or "123456789")
+WEBHOOK_PATH = "/webhook"
+PORT = int(os.getenv("PORT", "10000"))
 
-# ===== Logging =====
-logging.basicConfig(
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    level=logging.INFO,
-)
+# === Logging ===
+logging.basicConfig(level=logging.INFO)
 
-# ===== Chat ID Storage =====
+# === FastAPI App for Render ===
+app = FastAPI()
+
+# === Telegram App ===
+telegram_app = ApplicationBuilder().token(BOT_TOKEN).build()
+
 chat_ids_file = "chat_ids.txt"
 
 def load_chat_ids():
@@ -34,45 +40,53 @@ def save_chat_ids(chat_ids):
 
 user_chat_ids = load_chat_ids()
 
-# ===== Bot Handlers =====
+# === Handlers ===
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     user_chat_ids.add(chat_id)
     save_chat_ids(user_chat_ids)
 
-    user = update.effective_user
-    name = user.full_name or user.username or "User"
-
+    name = update.effective_user.full_name or update.effective_user.username
     await update.message.reply_text(f"Hi {name}! You're now subscribed for updates.")
 
 async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
-        await update.message.reply_text("❌ You are not authorized to use this command.")
+        await update.message.reply_text("❌ Unauthorized.")
         return
 
     if not context.args:
-        await update.message.reply_text("Usage:\n/broadcast <your message>")
+        await update.message.reply_text("Usage: /broadcast <message>")
         return
 
     message = " ".join(context.args)
-
     success, fail = 0, 0
-    for chat_id in user_chat_ids:
+
+    for cid in user_chat_ids:
         try:
-            await context.bot.send_message(chat_id=chat_id, text=message)
+            await context.bot.send_message(chat_id=cid, text=message)
             success += 1
-        except Exception as e:
-            logging.warning(f"Failed to send to {chat_id}: {e}")
+        except:
             fail += 1
 
-    await update.message.reply_text(f"✅ Sent to {success} users. ❌ Failed: {fail}")
+    await update.message.reply_text(f"✅ Sent to {success} users, ❌ Failed: {fail}")
 
-# ===== Main =====
+telegram_app.add_handler(CommandHandler("start", start))
+telegram_app.add_handler(CommandHandler("broadcast", broadcast))
+
+# === FastAPI Endpoint for Telegram ===
+@app.post(WEBHOOK_PATH)
+async def telegram_webhook(request: Request):
+    data = await request.json()
+    await telegram_app.update_queue.put(Update.de_json(data, telegram_app.bot))
+    return {"status": "ok"}
+
+# === Start the Webhook Server ===
 if __name__ == "__main__":
-    app = ApplicationBuilder().token(BOT_TOKEN).build()
+    webhook_url = f"https://{os.getenv('RENDER_EXTERNAL_HOSTNAME')}{WEBHOOK_PATH}"
+    print(f"Setting webhook: {webhook_url}")
 
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("broadcast", broadcast))
+    async def setup():
+        await telegram_app.bot.set_webhook(url=webhook_url)
 
-    print("✅ Bot is running...")
-    app.run_polling()
+    telegram_app.run_task(setup())
+    uvicorn.run(app, host="0.0.0.0", port=PORT)
