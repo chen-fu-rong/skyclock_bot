@@ -8,6 +8,7 @@ from telegram.ext import (
 )
 from fastapi import FastAPI, Request
 import uvicorn
+import asyncio
 
 # === CONFIG ===
 BOT_TOKEN = os.getenv("BOT_TOKEN") or "YOUR_BOT_TOKEN"
@@ -18,12 +19,13 @@ PORT = int(os.getenv("PORT", "10000"))
 # === Logging ===
 logging.basicConfig(level=logging.INFO)
 
-# === FastAPI App for Render ===
+# === FastAPI App ===
 app = FastAPI()
 
 # === Telegram App ===
 telegram_app = ApplicationBuilder().token(BOT_TOKEN).build()
 
+# === File to store chat IDs ===
 chat_ids_file = "chat_ids.txt"
 
 def load_chat_ids():
@@ -40,7 +42,7 @@ def save_chat_ids(chat_ids):
 
 user_chat_ids = load_chat_ids()
 
-# === Handlers ===
+# === Telegram Handlers ===
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     user_chat_ids.add(chat_id)
@@ -73,7 +75,7 @@ async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
 telegram_app.add_handler(CommandHandler("start", start))
 telegram_app.add_handler(CommandHandler("broadcast", broadcast))
 
-# === FastAPI Endpoint for Telegram ===
+# === FastAPI Endpoint for Telegram Webhook ===
 @app.post(WEBHOOK_PATH)
 async def telegram_webhook(request: Request):
     data = await request.json()
@@ -81,20 +83,18 @@ async def telegram_webhook(request: Request):
     await telegram_app.process_update(update)
     return {"status": "ok"}
 
-# === Start the Webhook Server ===
-if __name__ == "__main__":
-    webhook_url = f"https://{os.getenv('RENDER_EXTERNAL_HOSTNAME')}{WEBHOOK_PATH}"
-    print(f"Setting webhook: {webhook_url}")
-
-    import asyncio
-
-    async def main():
-        await telegram_app.bot.set_webhook(url=webhook_url)
-
-    asyncio.run(main())
-
-    uvicorn.run(app, host="0.0.0.0", port=PORT)
-
+# === Root route (for Render health check) ===
 @app.get("/")
 async def root():
     return {"message": "SkyClock Bot is running!"}
+
+# === Setup webhook and run FastAPI ===
+async def start_bot():
+    await telegram_app.initialize()
+    webhook_url = f"https://{os.getenv('RENDER_EXTERNAL_HOSTNAME')}{WEBHOOK_PATH}"
+    print(f"Setting webhook: {webhook_url}")
+    await telegram_app.bot.set_webhook(url=webhook_url)
+
+if __name__ == "__main__":
+    asyncio.run(start_bot())
+    uvicorn.run(app, host="0.0.0.0", port=PORT)
