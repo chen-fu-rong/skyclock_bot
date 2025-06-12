@@ -85,8 +85,11 @@ if __name__ == "__main__":
     webhook_url = f"https://{os.getenv('RENDER_EXTERNAL_HOSTNAME')}{WEBHOOK_PATH}"
     print(f"Setting webhook: {webhook_url}")
 
-    async def setup():
+    import asyncio
+
+    async def main():
         await telegram_app.bot.set_webhook(url=webhook_url)
 
-    telegram_app.run_task(setup())
+    asyncio.run(main())
+
     uvicorn.run(app, host="0.0.0.0", port=PORT)
