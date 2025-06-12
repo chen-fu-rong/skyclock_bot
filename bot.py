@@ -6,13 +6,12 @@ from fastapi import FastAPI, Request
 import uvicorn
 import asyncio
 
-# Config
+logging.basicConfig(level=logging.INFO)
+
 BOT_TOKEN = os.getenv("BOT_TOKEN") or "YOUR_BOT_TOKEN"
 ADMIN_ID = int(os.getenv("ADMIN_ID") or "123456789")
 WEBHOOK_PATH = "/webhook"
 PORT = int(os.getenv("PORT", "10000"))
-
-logging.basicConfig(level=logging.INFO)
 
 app = FastAPI()
 
@@ -34,7 +33,6 @@ def save_chat_ids(chat_ids):
 
 user_chat_ids = load_chat_ids()
 
-# Handlers
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     user_chat_ids.add(chat_id)
@@ -68,6 +66,16 @@ async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
 telegram_app.add_handler(CommandHandler("start", start))
 telegram_app.add_handler(CommandHandler("broadcast", broadcast))
 
+@app.on_event("startup")
+async def startup_event():
+    # Start background task to process the telegram update queue
+    asyncio.create_task(telegram_app.start())
+    asyncio.create_task(telegram_app.updater.start_polling())  # Optional: for polling fallback
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    await telegram_app.stop()
+
 @app.post(WEBHOOK_PATH)
 async def telegram_webhook(request: Request):
     data = await request.json()
@@ -81,11 +89,14 @@ async def root():
     return {"message": "SkyClock Bot is running!"}
 
 if __name__ == "__main__":
+    import sys
+    import uvicorn
+
+    webhook_url = f"https://{os.getenv('RENDER_EXTERNAL_HOSTNAME')}{WEBHOOK_PATH}"
+    logging.info(f"Setting webhook: {webhook_url}")
+
     async def main():
-        webhook_url = f"https://{os.getenv('RENDER_EXTERNAL_HOSTNAME')}{WEBHOOK_PATH}"
-        logging.info(f"Setting webhook: {webhook_url}")
         await telegram_app.bot.set_webhook(webhook_url)
-        # Run server
         config = uvicorn.Config(app, host="0.0.0.0", port=PORT, log_level="info")
         server = uvicorn.Server(config)
         await server.serve()
