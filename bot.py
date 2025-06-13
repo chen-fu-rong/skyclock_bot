@@ -1,6 +1,7 @@
 import os
 import logging
 import asyncio
+import json
 import httpx
 from fastapi import FastAPI, Request
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -52,18 +53,13 @@ translations = {
         "en": "Welcome! 🌟",
         "my": "ကြိုဆိုပါတယ်! 🌟",
         "zh": "欢迎！🌟"
+    },
+    "shard_error": {
+        "en": "❌ Failed to load shard data.",
+        "my": "❌ ချပ်ဒေတာကိုဖတ်မရပါ။",
+        "zh": "❌ 无法加载碎片数据。"
     }
 }
-
-# -------------------------------
-# 🔗 Fetch shard data
-# -------------------------------
-async def fetch_shard_data():
-    url = "https://raw.githubusercontent.com/PlutoyDev/sky-shards/main/data/shards/en.json"
-    async with httpx.AsyncClient() as client:
-        response = await client.get(url)
-        response.raise_for_status()
-        return response.json()
 
 # -------------------------------
 # 🔘 Start Command
@@ -79,6 +75,30 @@ async def start(update: Update, context: CallbackContext):
     ]
     menu_markup = InlineKeyboardMarkup(buttons)
     await update.message.reply_text(translations["welcome"][lang], reply_markup=menu_markup)
+
+# -------------------------------
+# 📦 Fetch Shard Data
+# -------------------------------
+async def fetch_shard_data():
+    url = "https://raw.githubusercontent.com/PlutoyDev/sky-shards/main/public/en/minified.json"
+    async with httpx.AsyncClient() as client:
+        response = await client.get(url)
+        response.raise_for_status()
+        return response.json()
+
+def format_shards(data: dict) -> str:
+    shards = data.get("shards", [])
+    if not shards:
+        return "No shard data available."
+    
+    formatted = []
+    for i, shard in enumerate(shards, 1):
+        name = shard.get("name", f"Shard {i}")
+        time = shard.get("time", "Unknown")
+        location = shard.get("location", "Unknown")
+        formatted.append(f"🔹 {name}\n⏰ {time}\n📍 {location}")
+    
+    return "\n\n".join(formatted)
 
 # -------------------------------
 # 🔁 Button Callback Handler
@@ -102,18 +122,12 @@ async def button_handler(update: Update, context: CallbackContext):
 
         elif label == translations["menu"][lang][6]:  # "Shards"
             try:
-                shards = await fetch_shard_data()
-                lines = []
-                for shard in shards:
-                    name = shard.get("name", "Unknown")
-                    location = shard.get("location", "Unknown")
-                    time = shard.get("time", "Unknown")
-                    shard_type = shard.get("type", "Unknown")
-                    lines.append(f"🔹 {name}\n📍 {location}\n🕒 {time}\n✨ {shard_type}")
-                message = "\n\n".join(lines)
-                await query.edit_message_text(message[:4096])
+                data = await fetch_shard_data()
+                text = format_shards(data)
+                await query.edit_message_text(text)
             except Exception as e:
-                await query.edit_message_text(f"Failed to load shard data.\n{e}")
+                logging.error(f"Shard fetch failed: {e}")
+                await query.edit_message_text(translations["shard_error"][lang])
         else:
             await query.edit_message_text(f"You selected: {label}")
 
@@ -156,7 +170,6 @@ async def startup_event():
     await application.initialize()
     await application.start()
     asyncio.create_task(process_updates())
-
     webhook_url = f"https://{os.getenv('RENDER_EXTERNAL_HOSTNAME')}{WEBHOOK_PATH}"
     await application.bot.set_webhook(webhook_url)
     logging.info(f"Webhook set to {webhook_url}")
