@@ -1,7 +1,6 @@
 import os
 import logging
 import asyncio
-import pytz
 from fastapi import FastAPI, Request
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
@@ -12,7 +11,6 @@ from telegram.ext import (
     CallbackContext,
 )
 from datetime import datetime, timedelta, time
-import pytz
 
 logging.basicConfig(level=logging.INFO)
 
