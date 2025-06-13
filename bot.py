@@ -1,7 +1,7 @@
 import os
 import logging
 import asyncpg
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from contextlib import asynccontextmanager
 from telegram import Update
 from telegram.ext import (
@@ -23,10 +23,13 @@ app = FastAPI()
 # Global database pool
 db_pool = None
 
+# Global Telegram application
+telegram_app = None
+
 # Lifespan handler for startup and shutdown
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global db_pool
+    global db_pool, telegram_app
     # Startup: Initialize database connection
     try:
         await init_db()
@@ -36,7 +39,6 @@ async def lifespan(app: FastAPI):
         raise
 
     # Initialize Telegram bot
-    global telegram_app
     telegram_app = (
         Application.builder()
         .token(os.getenv("TELEGRAM_BOT_TOKEN"))
@@ -44,6 +46,9 @@ async def lifespan(app: FastAPI):
     )
     await telegram_app.initialize()
     await telegram_app.start()
+    # Add command handlers during startup
+    telegram_app.add_handler(CommandHandler("start", start))
+    telegram_app.add_handler(CommandHandler("help", help_command))
     logger.info("Telegram bot initialized")
 
     yield
@@ -103,7 +108,7 @@ async def store_user(user_id: int, username: str):
 # Telegram command handlers
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
-    await store_user(user.id, user.username)
+    await store_user(user.id, user.username or f"user_{user.id}")
     await update.message.reply_text("Welcome to SkyClock Bot! Use /help to see commands.")
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -111,20 +116,16 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # FastAPI webhook endpoint
 @app.post("/webhook")
-async def webhook(update: Update):
-    await telegram_app.process_update(update)
+async def webhook(request: Request):
+    global telegram_app
+    # Get raw JSON body
+    json_data = await request.json()
+    # Convert to Telegram Update object
+    update = Update.de_json(json_data, telegram_app.bot)
+    if update:
+        await telegram_app.process_update(update)
     return JSONResponse(content={"status": "ok"})
-
-# Main function to set up handlers and start the bot
-async def main():
-    # Add command handlers
-    telegram_app.add_handler(CommandHandler("start", start))
-    telegram_app.add_handler(CommandHandler("help", help_command))
 
 if __name__ == "__main__":
     import uvicorn
-    # Run main to set up handlers
-    import asyncio
-    asyncio.run(main())
-    # Start FastAPI server
     uvicorn.run(app, host="0.0.0.0", port=int(os.getenv("PORT", 8000)))
