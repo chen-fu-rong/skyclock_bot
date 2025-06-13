@@ -80,7 +80,7 @@ async def init_db():
                 ssl="require",
                 min_size=1,
                 max_size=10,
-                timeout=120
+                timeout=120  # Increased timeout to 120 seconds
             )
             logger.info("Database pool created successfully")
             return
@@ -92,11 +92,11 @@ async def init_db():
             logger.error(f"Attempt {attempt + 1} - Unexpected error: {e}")
         
         if attempt < retries - 1:
-            await asyncio.sleep(5)
+            await asyncio.sleep(5)  # Wait 5 seconds before retrying
         else:
             raise Exception("Failed to initialize database after multiple attempts")
 
-# Example database query
+# Example database query (modify as needed)
 async def store_user(user_id: int, username: str):
     async with db_pool.acquire() as connection:
         await connection.execute(
@@ -136,4 +136,5 @@ async def webhook(request: Request):
 if __name__ == "__main__":
     import uvicorn
     port = int(os.getenv("PORT", 8000))
+    logger.info(f"Binding to port: {port}")
     uvicorn.run(app, host="0.0.0.0", port=port)
