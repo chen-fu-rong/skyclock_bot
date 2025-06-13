@@ -32,6 +32,7 @@ db_pool = None
 
 async def init_db():
     global db_pool
+    print("DATABASE_URL:", DATABASE_URL)
     db_pool = await asyncpg.create_pool(DATABASE_URL)
     async with db_pool.acquire() as conn:
         await conn.execute("""
