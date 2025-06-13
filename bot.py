@@ -7,6 +7,7 @@ from fastapi import FastAPI, Request
 from contextlib import asynccontextmanager
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
+from telegram.error import InvalidToken
 from fastapi.responses import JSONResponse
 
 # Set up logging
@@ -26,17 +27,30 @@ telegram_app = None
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global db_pool, telegram_app
-    # Startup: Initialize Telegram bot and start database connection in background
-    telegram_app = (
-        Application.builder()
-        .token(os.getenv("TELEGRAM_BOT_TOKEN"))
-        .build()
-    )
-    await telegram_app.initialize()
-    await telegram_app.start()
-    telegram_app.add_handler(CommandHandler("start", start))
-    telegram_app.add_handler(CommandHandler("help", help_command))
-    logger.info("Telegram bot initialized")
+    # Startup: Initialize Telegram bot
+    bot_token = os.getenv("TELEGRAM_BOT_TOKEN")
+    if not bot_token:
+        logger.error("TELEGRAM_BOT_TOKEN environment variable is not set")
+        raise ValueError("TELEGRAM_BOT_TOKEN environment variable is not set")
+    
+    logger.info("Attempting to initialize Telegram bot")
+    try:
+        telegram_app = (
+            Application.builder()
+            .token(bot_token)
+            .build()
+        )
+        await telegram_app.initialize()
+        await telegram_app.start()
+        telegram_app.add_handler(CommandHandler("start", start))
+        telegram_app.add_handler(CommandHandler("help", help_command))
+        logger.info("Telegram bot initialized successfully")
+    except InvalidToken as e:
+        logger.error(f"Invalid Telegram bot token: {e}")
+        raise
+    except Exception as e:
+        logger.error(f"Failed to initialize Telegram bot: {e}")
+        raise
 
     # Start database initialization in background
     asyncio.create_task(init_db_background())
@@ -76,8 +90,8 @@ async def init_db_background():
                 ssl="require",
                 min_size=1,
                 max_size=10,
-                command_timeout=120,  # Increased timeout for queries
-                server_settings={'connect_timeout': '120'}  # Increased connect timeout
+                command_timeout=120,
+                server_settings={'connect_timeout': '120'}
             )
             logger.info("Database pool created successfully")
             return
@@ -89,11 +103,11 @@ async def init_db_background():
             logger.error(f"Attempt {attempt + 1} - Unexpected error: {e}")
         
         if attempt < retries - 1:
-            await asyncio.sleep(10)  # Wait 10 seconds before retrying
+            await asyncio.sleep(10)
         else:
             logger.error("Failed to initialize database after multiple attempts")
 
-# Example database query (modify as needed)
+# Example database query
 async def store_user(user_id: int, username: str):
     if not db_pool:
         logger.error("Database pool not initialized")
@@ -136,10 +150,10 @@ async def webhook(request: Request):
 # Health check endpoint for Render
 @app.get("/health")
 async def health():
-    return {"status": "ok", "database_connected": bool(db_pool)}
+    return {"status": "ok", "database_connected": bool(db_pool), "telegram_initialized": bool(telegram_app)}
 
 if __name__ == "__main__":
     import uvicorn
     port = int(os.getenv("PORT", 10000))
-    logger.info(f"Binding to port: {port}")
+    logger.info(f"Starting server on port: {port}")
     uvicorn.run(app, host="0.0.0.0", port=port)
