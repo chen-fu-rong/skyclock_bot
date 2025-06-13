@@ -26,15 +26,7 @@ telegram_app = None
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global db_pool, telegram_app
-    # Startup
-    try:
-        await init_db()
-        logger.info("Database pool initialized successfully")
-    except Exception as e:
-        logger.error(f"Failed to initialize database: {e}")
-        raise
-
-    # Initialize Telegram bot
+    # Startup: Initialize Telegram bot and start database connection in background
     telegram_app = (
         Application.builder()
         .token(os.getenv("TELEGRAM_BOT_TOKEN"))
@@ -45,6 +37,9 @@ async def lifespan(app: FastAPI):
     telegram_app.add_handler(CommandHandler("start", start))
     telegram_app.add_handler(CommandHandler("help", help_command))
     logger.info("Telegram bot initialized")
+
+    # Start database initialization in background
+    asyncio.create_task(init_db_background())
 
     yield
 
@@ -59,15 +54,16 @@ async def lifespan(app: FastAPI):
 
 app.router.lifespan_context = lifespan
 
-# Initialize database connection pool with retries
-async def init_db():
+# Initialize database connection pool in the background
+async def init_db_background():
     global db_pool
     DATABASE_URL = os.getenv("DATABASE_URL")
+    logger.info(f"DATABASE_URL: {DATABASE_URL}")
     if not DATABASE_URL:
         logger.error("DATABASE_URL environment variable is not set")
-        raise ValueError("DATABASE_URL environment variable is not set")
+        return
     
-    retries = 3
+    retries = 5
     for attempt in range(retries):
         try:
             parsed = urlparse(DATABASE_URL)
@@ -80,7 +76,8 @@ async def init_db():
                 ssl="require",
                 min_size=1,
                 max_size=10,
-                timeout=120  # Increased timeout to 120 seconds
+                command_timeout=120,  # Increased timeout for queries
+                server_settings={'connect_timeout': '120'}  # Increased connect timeout
             )
             logger.info("Database pool created successfully")
             return
@@ -92,12 +89,15 @@ async def init_db():
             logger.error(f"Attempt {attempt + 1} - Unexpected error: {e}")
         
         if attempt < retries - 1:
-            await asyncio.sleep(5)  # Wait 5 seconds before retrying
+            await asyncio.sleep(10)  # Wait 10 seconds before retrying
         else:
-            raise Exception("Failed to initialize database after multiple attempts")
+            logger.error("Failed to initialize database after multiple attempts")
 
 # Example database query (modify as needed)
 async def store_user(user_id: int, username: str):
+    if not db_pool:
+        logger.error("Database pool not initialized")
+        return
     async with db_pool.acquire() as connection:
         await connection.execute(
             """
@@ -133,8 +133,13 @@ async def webhook(request: Request):
         logger.error(f"Error processing webhook: {e}")
         return JSONResponse(content={"status": "error"}, status_code=500)
 
+# Health check endpoint for Render
+@app.get("/health")
+async def health():
+    return {"status": "ok", "database_connected": bool(db_pool)}
+
 if __name__ == "__main__":
     import uvicorn
-    port = int(os.getenv("PORT", 8000))
+    port = int(os.getenv("PORT", 10000))
     logger.info(f"Binding to port: {port}")
     uvicorn.run(app, host="0.0.0.0", port=port)
