@@ -6,11 +6,7 @@ from urllib.parse import urlparse
 from fastapi import FastAPI, Request
 from contextlib import asynccontextmanager
 from telegram import Update
-from telegram.ext import (
-    Application,
-    CommandHandler,
-    ContextTypes,
-)
+from telegram.ext import Application, CommandHandler, ContextTypes
 from fastapi.responses import JSONResponse
 
 # Set up logging
@@ -22,17 +18,15 @@ logger = logging.getLogger(__name__)
 # Initialize FastAPI app
 app = FastAPI()
 
-# Global database pool
+# Global variables
 db_pool = None
-
-# Global Telegram application
 telegram_app = None
 
 # Lifespan handler for startup and shutdown
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global db_pool, telegram_app
-    # Startup: Initialize database connection
+    # Startup
     try:
         await init_db()
         logger.info("Database pool initialized successfully")
@@ -48,14 +42,13 @@ async def lifespan(app: FastAPI):
     )
     await telegram_app.initialize()
     await telegram_app.start()
-    # Add command handlers during startup
     telegram_app.add_handler(CommandHandler("start", start))
     telegram_app.add_handler(CommandHandler("help", help_command))
     logger.info("Telegram bot initialized")
 
     yield
 
-    # Shutdown: Clean up resources
+    # Shutdown
     if db_pool:
         await db_pool.close()
         logger.info("Database pool closed")
@@ -77,7 +70,6 @@ async def init_db():
     retries = 3
     for attempt in range(retries):
         try:
-            # Parse the URL for explicit parameter passing
             parsed = urlparse(DATABASE_URL)
             db_pool = await asyncpg.create_pool(
                 host=parsed.hostname,
@@ -88,23 +80,23 @@ async def init_db():
                 ssl="require",
                 min_size=1,
                 max_size=10,
-                timeout=120  # Increased timeout to 120 seconds
+                timeout=120
             )
             logger.info("Database pool created successfully")
             return
         except asyncpg.exceptions.ConnectionFailureError as e:
             logger.error(f"Attempt {attempt + 1} - Connection failure: {e}")
-        except asyncpg.exceptions.TimeoutError as e:
+        except asyncio.TimeoutError as e:
             logger.error(f"Attempt {attempt + 1} - Connection timed out: {e}")
         except Exception as e:
             logger.error(f"Attempt {attempt + 1} - Unexpected error: {e}")
         
         if attempt < retries - 1:
-            await asyncio.sleep(5)  # Wait 5 seconds before retrying
+            await asyncio.sleep(5)
         else:
             raise Exception("Failed to initialize database after multiple attempts")
 
-# Example database query (modify as needed)
+# Example database query
 async def store_user(user_id: int, username: str):
     async with db_pool.acquire() as connection:
         await connection.execute(
@@ -132,9 +124,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def webhook(request: Request):
     global telegram_app
     try:
-        # Get raw JSON body
         json_data = await request.json()
-        # Convert to Telegram Update object
         update = Update.de_json(json_data, telegram_app.bot)
         if update:
             await telegram_app.process_update(update)
