@@ -18,7 +18,7 @@ logging.basicConfig(level=logging.INFO)
 BOT_TOKEN = os.getenv("BOT_TOKEN") or "YOUR_BOT_TOKEN"
 WEBHOOK_PATH = "/webhook"
 PORT = int(os.getenv("PORT", "10000"))
-ADMIN_IDS = [123456789]  # Replace with your Telegram user ID
+ADMIN_IDS = list(map(int, os.getenv("ADMIN_IDS", "").split(",")))
 
 USER_DB = "users.json"
 def save_user_id(user_id):
