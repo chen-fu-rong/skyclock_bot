@@ -80,7 +80,7 @@ async def start(update: Update, context: CallbackContext):
 # 📦 Fetch Shard Data
 # -------------------------------
 async def fetch_shard_data():
-    url = "https://raw.githubusercontent.com/PlutoyDev/sky-shards/main/public/en/minified.json"
+    url = "https://raw.githubusercontent.com/PlutoyDev/sky-shards/main/src/lib/data/shards/en.json"
     async with httpx.AsyncClient() as client:
         response = await client.get(url)
         response.raise_for_status()
