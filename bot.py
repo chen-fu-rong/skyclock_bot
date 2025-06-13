@@ -229,4 +229,152 @@ async def button_handler(update: Update, context: CallbackContext):
 
     # === Back buttons ===
     if query_data == "back_to_main":
-       
+                # Back to main menu
+        await show_main_menu(update, context)
+        return
+
+# Helper function to show main menu (called from several places)
+async def show_main_menu(update: Update, context: CallbackContext):
+    buttons = [
+        [InlineKeyboardButton(text="Wax", callback_data="menu_0")],
+        [InlineKeyboardButton(text="Quests", callback_data="menu_1")],
+        [InlineKeyboardButton(text="Shops and Spirits", callback_data="menu_2")],
+        [InlineKeyboardButton(text="Reset", callback_data="menu_3")],
+        [InlineKeyboardButton(text="Concert and Shows", callback_data="menu_4")],
+        [InlineKeyboardButton(text="Fifth Anniversary Events", callback_data="menu_5")],
+        [InlineKeyboardButton(text="Shards", callback_data="menu_6")],
+    ]
+    menu_markup = InlineKeyboardMarkup(buttons)
+    if update.callback_query:
+        await update.callback_query.edit_message_text("Welcome! 🌟", reply_markup=menu_markup)
+    elif update.message:
+        await update.message.reply_text("Welcome! 🌟", reply_markup=menu_markup)
+
+# Handle user messages (expecting number input for notify minutes)
+async def message_handler(update: Update, context: CallbackContext):
+    user_id = update.message.from_user.id
+    text = update.message.text.strip()
+
+    if "notify_event_key" in context.user_data and "notify_event_time" in context.user_data:
+        # Expecting number of minutes before
+        try:
+            minutes_before = int(text)
+            if minutes_before < 0:
+                raise ValueError()
+
+            event_key = context.user_data["notify_event_key"]
+            event_time_str = context.user_data["notify_event_time"]
+
+            # Convert event_time_str to datetime today or tomorrow based on now
+            now = datetime.now()
+            event_time_obj = datetime.strptime(event_time_str, "%H:%M").time()
+            event_dt = datetime.combine(now.date(), event_time_obj)
+            if event_dt < now:
+                event_dt += timedelta(days=1)
+
+            notify_time = event_dt - timedelta(minutes=minutes_before)
+            if notify_time < now:
+                await update.message.reply_text("Notification time already passed. Choose a smaller minutes value.")
+                return
+
+            # Save notification
+            user_notifications.setdefault(user_id, []).append((event_key, notify_time, event_dt))
+
+            await update.message.reply_text(
+                f"Notification set for event '{event_key.replace('_', ' ').title()}' at {event_time_str}, "
+                f"{minutes_before} minutes before."
+            )
+            # Clear waiting state
+            context.user_data.pop("notify_event_key")
+            context.user_data.pop("notify_event_time")
+
+            # Optionally show main menu again
+            await show_main_menu(update, context)
+
+        except ValueError:
+            await update.message.reply_text("Please send a valid positive number for minutes.")
+    else:
+        await update.message.reply_text("Send /start to begin.")
+
+# Background task to check notifications every 10 seconds
+async def notification_checker():
+    while True:
+        now = datetime.now()
+        to_remove = []
+        for user_id, notifs in user_notifications.items():
+            for idx, (event_key, notify_time, event_dt) in enumerate(notifs):
+                if notify_time <= now:
+                    try:
+                        chat_id = user_id
+                        text = (
+                            f"⏰ Reminder: Event *{event_key.replace('_', ' ').title()}* is at "
+                            f"{event_dt.strftime('%H:%M')}.\n"
+                            f"Get ready!"
+                        )
+                        await application.bot.send_message(chat_id=chat_id, text=text, parse_mode="Markdown")
+                    except Exception as e:
+                        logging.error(f"Failed to send notification to {user_id}: {e}")
+                    to_remove.append((user_id, idx))
+        # Remove sent notifications
+        for user_id, idx in sorted(to_remove, key=lambda x: x[1], reverse=True):
+            if user_id in user_notifications and idx < len(user_notifications[user_id]):
+                user_notifications[user_id].pop(idx)
+        await asyncio.sleep(10)
+
+# -------------------------------
+# Your shard & timezone logic here (keep from your original code)
+# -------------------------------
+
+# Reuse calculate_shard_info(), format_shard_message(), set_timezone(), etc.
+# Register those handlers below
+
+# -------------------------------
+# Register Handlers
+application.add_handler(CommandHandler("start", start))
+application.add_handler(CommandHandler("tz", set_timezone))
+application.add_handler(CallbackQueryHandler(button_handler))
+application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, message_handler))
+
+# -------------------------------
+# FastAPI webhook & startup/shutdown
+
+async def process_updates():
+    while True:
+        update = await application.update_queue.get()
+        try:
+            await application.process_update(update)
+        except Exception as e:
+            logging.error(f"Error while processing update: {e}")
+
+@app.on_event("startup")
+async def on_startup():
+    await application.initialize()
+    await application.start()
+    asyncio.create_task(process_updates())
+    asyncio.create_task(notification_checker())  # Start background notifier task
+    webhook_url = f"https://{os.getenv('RENDER_EXTERNAL_HOSTNAME')}{WEBHOOK_PATH}"
+    await application.bot.set_webhook(webhook_url)
+    logging.info(f"Webhook set to {webhook_url}")
+
+@app.on_event("shutdown")
+async def on_shutdown():
+    await application.stop()
+    await application.shutdown()
+
+@app.post(WEBHOOK_PATH)
+async def webhook(request: Request):
+    data = await request.json()
+    logging.info(f"Received update: {data}")
+    update = Update.de_json(data, application.bot)
+    await application.update_queue.put(update)
+    return {"ok": True}
+
+@app.get("/")
+async def root():
+    return {"message": "Bot is running"}
+
+# -------------------------------
+# Run locally
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=PORT)
