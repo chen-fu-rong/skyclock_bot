@@ -1,8 +1,13 @@
 import os
 import logging
 import asyncio
+from datetime import datetime, time, timedelta
 from fastapi import FastAPI, Request
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import (
+    Update,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+)
 from telegram.ext import (
     ApplicationBuilder,
     CommandHandler,
@@ -10,7 +15,6 @@ from telegram.ext import (
     CallbackQueryHandler,
     CallbackContext,
 )
-from datetime import datetime, timedelta, time
 
 logging.basicConfig(level=logging.INFO)
 
@@ -21,176 +25,318 @@ PORT = int(os.getenv("PORT", "10000"))
 app = FastAPI()
 application = ApplicationBuilder().token(BOT_TOKEN).build()
 
-# -------------------------------
-# 🌍 Timezone & Shard Logic
-# -------------------------------
+# ---------------------------
+# Event schedule times (all times in a day, 24h format)
+# Grandma (even hours + 5 min)
+GRANDMA_TIMES = [time(h, 5) for h in range(0, 24, 2)]
 
-def get_shard_day_offset(utc_dt):
-    # Shard days start at 00:00 UTC
-    return utc_dt.date()
+# Turtle (even hours + 20 min)
+TURTLE_TIMES = [time(h, 20) for h in range(0, 24, 2)]
 
-def calculate_shard_info(target_date: datetime):
-    day = target_date.weekday()
-    is_even = day % 2 == 0
+# Geyser (odd hours + 35 min)
+GEYSER_TIMES = [time(h, 35) for h in range(1, 24, 2)]
 
-    if is_even:
-        color = "Red"
-        locations = ["Sanctuary", "Vault"]
+# Dreams Skater (no notification)
+DREAMS_SKATER_TIMES = [time(11, 0), time(14, 0), time(18, 0)]
+
+EVENTS = {
+    "Grandma": GRANDMA_TIMES,
+    "Turtle": TURTLE_TIMES,
+    "Geyser": GEYSER_TIMES,
+    "Dreams Skater": DREAMS_SKATER_TIMES,
+}
+
+# In-memory store notifications: {user_id: [(event_name, notify_time, event_time), ...]}
+user_notifications = {}
+
+# ---------------------------
+# Utilities
+
+def format_time(t: time) -> str:
+    return t.strftime("%H:%M")
+
+def get_next_event_time(now: datetime, event_times: list[time]) -> datetime | None:
+    today = now.date()
+    # Find first event today after now
+    for t in event_times:
+        dt = datetime.combine(today, t)
+        if dt > now:
+            return dt
+    # None today, next event tomorrow at first time
+    return datetime.combine(today + timedelta(days=1), event_times[0])
+
+def seconds_to_hms(seconds: int) -> str:
+    m, s = divmod(seconds, 60)
+    h, m = divmod(m, 60)
+    if h > 0:
+        return f"{h}h {m}m {s}s"
+    elif m > 0:
+        return f"{m}m {s}s"
     else:
-        color = "Black"
-        locations = ["Forest", "Brook"]
+        return f"{s}s"
 
-    reward = "4 wax"
-    base_times = [time(2, 0), time(10, 0), time(18, 0)]
-    shard_times = []
+def build_day_schedule_text(now: datetime, event_times: list[time]) -> str:
+    lines = []
+    today = now.date()
+    for t in event_times:
+        dt = datetime.combine(today, t)
+        if dt < now:
+            # Past event - strikethrough with markdown
+            lines.append(f"~~{format_time(t)}~~")
+        else:
+            lines.append(format_time(t))
+    return "\n".join(lines)
 
-    for t in base_times:
-        utc_dt = datetime.combine(target_date.date(), t)
-        shard_times.append(utc_dt)
+# ---------------------------
+# Bot Handlers
 
-    return {
-        "color": color,
-        "locations": locations,
-        "reward": reward,
-        "times_utc": shard_times
-    }
-
-def convert_to_local(utc_dt, offset_minutes):
-    return utc_dt + timedelta(minutes=offset_minutes)
-
-def format_shard_message(day_label, shard_data, offset_minutes):
-    times_local = [convert_to_local(t, offset_minutes).strftime("%H:%M") for t in shard_data["times_utc"]]
-    return (
-        f"🔮 *{day_label}'s Shard Prediction*\n"
-        f"Color: {shard_data['color']} Shard\n"
-        f"Locations: {', '.join(shard_data['locations'])}\n"
-        f"Reward: {shard_data['reward']}\n"
-        f"Times:\n"
-        f"• First Shard: {times_local[0]}\n"
-        f"• Second Shard: {times_local[1]}\n"
-        f"• Last Shard: {times_local[2]}"
-    )
-
-# -------------------------------
-# 🤖 Bot Handlers
-# -------------------------------
-
-async def start(update: Update, context: CallbackContext):
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = "Welcome! 🌟\nChoose a button below."
     buttons = [
-        [InlineKeyboardButton(text="Wax", callback_data="menu_0")],
-        [InlineKeyboardButton(text="Quests", callback_data="menu_1")],
-        [InlineKeyboardButton(text="Shops and Spirits", callback_data="menu_2")],
-        [InlineKeyboardButton(text="Reset", callback_data="menu_3")],
-        [InlineKeyboardButton(text="Concert and Shows", callback_data="menu_4")],
-        [InlineKeyboardButton(text="Fifth Anniversary Events", callback_data="menu_5")],
-        [InlineKeyboardButton(text="Shards", callback_data="menu_6")],
+        [InlineKeyboardButton("Wax", callback_data="wax")],
+        # You can add more main menu buttons here if needed
     ]
-    menu_markup = InlineKeyboardMarkup(buttons)
-    await update.message.reply_text("Welcome! 🌟", reply_markup=menu_markup)
+    await update.message.reply_text(text, reply_markup=InlineKeyboardMarkup(buttons))
 
-async def button_handler(update: Update, context: CallbackContext):
+async def wax_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
+    buttons = [
+        [InlineKeyboardButton(event, callback_data=f"wax_event_{event.lower().replace(' ', '_')}")]
+        for event in EVENTS.keys()
+    ]
+    buttons.append([InlineKeyboardButton("Back", callback_data="back_to_main")])
+    await query.edit_message_text("Select an event:", reply_markup=InlineKeyboardMarkup(buttons))
+
+async def wax_event_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
     user_id = query.from_user.id
-    query_data = query.data
+    now = datetime.now()  # User local time approximation
+    event_key = query.data[len("wax_event_"):]
+    # Reverse lookup event name
+    event_name = None
+    for k in EVENTS.keys():
+        if k.lower().replace(' ', '_') == event_key:
+            event_name = k
+            break
+    if not event_name:
+        await query.edit_message_text("Unknown event.")
+        return
 
-    if query_data.startswith("menu_"):
-        index = int(query_data.split("_")[1])
+    event_times = EVENTS[event_name]
+    next_event_dt = get_next_event_time(now, event_times)
+    delta = next_event_dt - now
+    delta_str = seconds_to_hms(int(delta.total_seconds()))
 
-        if index == 6:  # Shards
-            try:
-                offset_minutes = context.user_data.get("utc_offset", 0)
+    schedule_text = build_day_schedule_text(now, event_times)
 
-                now_utc = datetime.utcnow()
-                today = now_utc
-                tomorrow = now_utc + timedelta(days=1)
+    text = (
+        f"**{event_name} Event**\n"
+        f"Next event: {next_event_dt.strftime('%Y-%m-%d %H:%M')}\n"
+        f"Time left: {delta_str}\n\n"
+        f"Today's schedule:\n{schedule_text}"
+    )
 
-                today_data = calculate_shard_info(today)
-                tomorrow_data = calculate_shard_info(tomorrow)
+    buttons = [
+        [InlineKeyboardButton("Notify Me", callback_data=f"notify_{event_key}")],
+        [InlineKeyboardButton("Back", callback_data="wax")],
+    ]
+    await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(buttons), parse_mode="MarkdownV2")
 
-                msg = (
-                    format_shard_message("Today", today_data, offset_minutes) + "\n\n" +
-                    format_shard_message("Tomorrow", tomorrow_data, offset_minutes)
-                )
+async def notify_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
 
-                await query.edit_message_text(msg, parse_mode="Markdown")
-            except Exception as e:
-                logging.error(f"Error calculating shards: {e}")
-                await query.edit_message_text("Failed to calculate shard data.")
-        else:
-            await query.edit_message_text(f"You selected option {index}")
+    event_key = query.data[len("notify_"):]
+    # Reverse lookup event name
+    event_name = None
+    for k in EVENTS.keys():
+        if k.lower().replace(' ', '_') == event_key:
+            event_name = k
+            break
+    if not event_name:
+        await query.edit_message_text("Unknown event.")
+        return
 
-# -------------------------------
-# 🕓 Timezone Setup (optional via command)
-# -------------------------------
+    event_times = EVENTS[event_name]
 
-async def set_timezone(update: Update, context: CallbackContext):
-    try:
-        if len(context.args) != 1:
-            await update.message.reply_text("Usage: /tz +0600 or /tz -0430")
+    buttons = [
+        [InlineKeyboardButton(format_time(t), callback_data=f"notify_time_{event_key}_{format_time(t)}")]
+        for t in event_times
+    ]
+    buttons.append([InlineKeyboardButton("Back", callback_data=f"wax_event_{event_key}")])
+    await query.edit_message_text(
+        f"Select the event time you want to be notified about for **{event_name}**:",
+        reply_markup=InlineKeyboardMarkup(buttons),
+        parse_mode="MarkdownV2"
+    )
+
+async def notify_time_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    user_id = query.from_user.id
+    data = query.data  # format: notify_time_<event_key>_<HH:MM>
+    parts = data.split("_")
+    event_key = parts[2]
+    event_time_str = parts[3]
+
+    # Store selected event info in user_data for next step input
+    context.user_data["notify_event_key"] = event_key
+    context.user_data["notify_event_time"] = event_time_str
+
+    await query.edit_message_text(
+        f"How many minutes before {event_time_str} do you want to be notified? (Send a number)"
+    )
+
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.message.from_user.id
+    text = update.message.text
+    # Check if waiting for notify minutes
+    if "notify_event_key" in context.user_data and "notify_event_time" in context.user_data:
+        try:
+            minutes_before = int(text)
+            if minutes_before < 0 or minutes_before > 1440:
+                raise ValueError()
+        except ValueError:
+            await update.message.reply_text("Please enter a valid positive integer number of minutes (0-1440).")
             return
 
-        tz_str = context.args[0]
-        sign = 1 if tz_str.startswith("+") else -1
-        hours = int(tz_str[1:3])
-        minutes = int(tz_str[3:5])
-        offset = sign * (hours * 60 + minutes)
+        event_key = context.user_data.pop("notify_event_key")
+        event_time_str = context.user_data.pop("notify_event_time")
 
-        context.user_data["utc_offset"] = offset
-        await update.message.reply_text(f"Time zone offset set to {offset} minutes.")
-    except Exception as e:
-        await update.message.reply_text("Invalid timezone format. Use like /tz +0630")
+        # Find event name & time object
+        event_name = None
+        for k in EVENTS.keys():
+            if k.lower().replace(' ', '_') == event_key:
+                event_name = k
+                break
+        if not event_name:
+            await update.message.reply_text("Error: event not found.")
+            return
 
-# -------------------------------
-# 📌 Register Handlers
-# -------------------------------
+        hh, mm = map(int, event_time_str.split(":"))
+        event_time_obj = time(hh, mm)
+        now = datetime.now()
+        today = now.date()
+        event_dt = datetime.combine(today, event_time_obj)
+        if event_dt < now:
+            # If event already passed today, assume tomorrow
+            event_dt += timedelta(days=1)
+        notify_dt = event_dt - timedelta(minutes=minutes_before)
+        if notify_dt < now:
+            await update.message.reply_text("Notification time already passed for this event. Try again.")
+            return
+
+        # Save notification
+        user_notifications.setdefault(user_id, []).append((event_name, notify_dt, event_dt))
+        await update.message.reply_text(
+            f"Notification set for {event_name} at {event_time_str} "
+            f"{minutes_before} minutes before (at {notify_dt.strftime('%Y-%m-%d %H:%M:%S')})"
+        )
+    else:
+        await update.message.reply_text("Send /start to begin.")
+
+# ---------------------------
+# Background task to check notifications and send messages
+async def notification_checker():
+    while True:
+        now = datetime.now()
+        to_remove = []
+        for user_id, notif_list in user_notifications.items():
+            for notif in notif_list:
+                event_name, notify_time, event_time = notif
+                if notify_time <= now:
+                    try:
+                        await application.bot.send_message(
+                            chat_id=user_id,
+                            text=(
+                                f"🔔 Reminder: {event_name} event at {event_time.strftime('%H:%M')} is coming soon!"
+                            ),
+                        )
+                    except Exception as e:
+                        logging.error(f"Failed to send notification to {user_id}: {e}")
+                    to_remove.append((user_id, notif))
+        # Remove sent notifications
+        for user_id, notif in to_remove:
+            if user_id in user_notifications:
+                if notif in user_notifications[user_id]:
+                    user_notifications[user_id].remove(notif)
+                if not user_notifications[user_id]:
+                    del user_notifications[user_id]
+
+        await asyncio.sleep(10)  # check every 10 seconds
+
+# ---------------------------
+# Navigation back handler
+
+async def back_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    if query.data == "back_to_main":
+        buttons = [[InlineKeyboardButton("Wax", callback_data="wax")]]
+        await query.edit_message_text("Welcome! 🌟\nChoose a button below.", reply_markup=InlineKeyboardMarkup(buttons))
+    elif query.data == "wax":
+        # Show wax events menu
+        buttons = [
+            [InlineKeyboardButton(event, callback_data=f"wax_event_{event.lower().replace(' ', '_')}")]
+            for event in EVENTS.keys()
+        ]
+        buttons.append([InlineKeyboardButton("Back", callback_data="back_to_main")])
+        await query.edit_message_text("Select an event:", reply_markup=InlineKeyboardMarkup(buttons))
+    else:
+        await query.edit_message_text("Back button pressed but no handler for this state.")
+
+# ---------------------------
+# Register handlers
 
 application.add_handler(CommandHandler("start", start))
-application.add_handler(CommandHandler("tz", set_timezone))
-application.add_handler(CallbackQueryHandler(button_handler))
+application.add_handler(CallbackQueryHandler(wax_handler, pattern="^wax$"))
+application.add_handler(CallbackQueryHandler(wax_event_handler, pattern="^wax_event_"))
+application.add_handler(CallbackQueryHandler(notify_handler, pattern="^notify_"))
+application.add_handler(CallbackQueryHandler(notify_time_handler, pattern="^notify_time_"))
+application.add_handler(CallbackQueryHandler(back_handler, pattern="^(back_to_main|wax)$"))
+application.add_handler(CommandHandler("help", start))
+application.add_handler(CommandHandler("menu", start))
+application.add_handler(CommandHandler("wax", wax_handler))
+application.add_handler(CommandHandler("notify", notify_handler))
 
-# -------------------------------
-# ⚙️ Webhook / FastAPI Setup
-# -------------------------------
+application.add_handler(
+    # fallback handler for any text, used for notify minutes input
+    CommandHandler("text", handle_message)
+)
 
-async def process_updates():
-    while True:
-        update = await application.update_queue.get()
-        try:
-            await application.process_update(update)
-        except Exception as e:
-            logging.error(f"Error while processing update: {e}")
+# The text handler must be MessageHandler (fix)
+from telegram.ext import MessageHandler, filters
+application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
-@app.on_event("startup")
-async def on_startup():
-    await application.initialize()
-    await application.start()
-    asyncio.create_task(process_updates())
-    webhook_url = f"https://{os.getenv('RENDER_EXTERNAL_HOSTNAME')}{WEBHOOK_PATH}"
-    await application.bot.set_webhook(webhook_url)
-    logging.info(f"Webhook set to {webhook_url}")
-
-@app.on_event("shutdown")
-async def on_shutdown():
-    await application.stop()
-    await application.shutdown()
+# ---------------------------
+# FastAPI webhook endpoint
 
 @app.post(WEBHOOK_PATH)
-async def webhook(request: Request):
-    data = await request.json()
-    logging.info(f"Received update: {data}")
+async def telegram_webhook(req: Request):
+    data = await req.json()
     update = Update.de_json(data, application.bot)
     await application.update_queue.put(update)
     return {"ok": True}
 
 @app.get("/")
 async def root():
-    return {"message": "Bot is running"}
+    return {"message": "Bot is running."}
 
-# -------------------------------
-# ▶️ Local Run
-# -------------------------------
+# ---------------------------
+# Run background tasks and start app
+
+async def main():
+    # Start background notification checker
+    asyncio.create_task(notification_checker())
+    # Start Telegram app polling (if webhook not used)
+    # await application.run_polling()
+    # We'll run FastAPI app instead (via Uvicorn externally)
 
 if __name__ == "__main__":
     import uvicorn
+    asyncio.run(main())
     uvicorn.run(app, host="0.0.0.0", port=PORT)
