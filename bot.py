@@ -29,6 +29,7 @@ async def lifespan(app: FastAPI):
     global db_pool, telegram_app
     # Startup: Initialize Telegram bot
     bot_token = os.getenv("TELEGRAM_BOT_TOKEN")
+    logger.info("Checking TELEGRAM_BOT_TOKEN environment variable")
     if not bot_token:
         logger.error("TELEGRAM_BOT_TOKEN environment variable is not set")
         raise ValueError("TELEGRAM_BOT_TOKEN environment variable is not set")
