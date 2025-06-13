@@ -1,6 +1,8 @@
 import os
 import logging
 import asyncpg
+import asyncio
+from urllib.parse import urlparse
 from fastapi import FastAPI, Request
 from contextlib import asynccontextmanager
 from telegram import Update
@@ -64,32 +66,43 @@ async def lifespan(app: FastAPI):
 
 app.router.lifespan_context = lifespan
 
-# Initialize database connection pool
+# Initialize database connection pool with retries
 async def init_db():
     global db_pool
     DATABASE_URL = os.getenv("DATABASE_URL")
-    logger.info(f"DATABASE_URL: {DATABASE_URL}")
     if not DATABASE_URL:
         logger.error("DATABASE_URL environment variable is not set")
         raise ValueError("DATABASE_URL environment variable is not set")
     
-    try:
-        db_pool = await asyncpg.create_pool(
-            DATABASE_URL,
-            ssl="require",  # Enforce SSL for Supabase
-            min_size=1,
-            max_size=10,
-        )
-        logger.info("Database pool created successfully")
-    except asyncpg.InvalidPasswordError:
-        logger.error("Invalid database password")
-        raise
-    except asyncpg.ConnectionFailureError:
-        logger.error("Failed to connect to database")
-        raise
-    except Exception as e:
-        logger.error(f"Unexpected error during database initialization: {e}")
-        raise
+    retries = 3
+    for attempt in range(retries):
+        try:
+            # Parse the URL for explicit parameter passing
+            parsed = urlparse(DATABASE_URL)
+            db_pool = await asyncpg.create_pool(
+                host=parsed.hostname,
+                port=parsed.port,
+                user=parsed.username,
+                password=parsed.password,
+                database=parsed.path.lstrip('/'),
+                ssl="require",
+                min_size=1,
+                max_size=10,
+                timeout=120  # Increased timeout to 120 seconds
+            )
+            logger.info("Database pool created successfully")
+            return
+        except asyncpg.exceptions.ConnectionFailureError as e:
+            logger.error(f"Attempt {attempt + 1} - Connection failure: {e}")
+        except asyncpg.exceptions.TimeoutError as e:
+            logger.error(f"Attempt {attempt + 1} - Connection timed out: {e}")
+        except Exception as e:
+            logger.error(f"Attempt {attempt + 1} - Unexpected error: {e}")
+        
+        if attempt < retries - 1:
+            await asyncio.sleep(5)  # Wait 5 seconds before retrying
+        else:
+            raise Exception("Failed to initialize database after multiple attempts")
 
 # Example database query (modify as needed)
 async def store_user(user_id: int, username: str):
@@ -118,14 +131,19 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 @app.post("/webhook")
 async def webhook(request: Request):
     global telegram_app
-    # Get raw JSON body
-    json_data = await request.json()
-    # Convert to Telegram Update object
-    update = Update.de_json(json_data, telegram_app.bot)
-    if update:
-        await telegram_app.process_update(update)
-    return JSONResponse(content={"status": "ok"})
+    try:
+        # Get raw JSON body
+        json_data = await request.json()
+        # Convert to Telegram Update object
+        update = Update.de_json(json_data, telegram_app.bot)
+        if update:
+            await telegram_app.process_update(update)
+        return JSONResponse(content={"status": "ok"})
+    except Exception as e:
+        logger.error(f"Error processing webhook: {e}")
+        return JSONResponse(content={"status": "error"}, status_code=500)
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=int(os.getenv("PORT", 8000)))
+    port = int(os.getenv("PORT", 8000))
+    uvicorn.run(app, host="0.0.0.0", port=port)
