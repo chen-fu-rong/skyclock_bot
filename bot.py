@@ -2,131 +2,115 @@ import os
 import asyncio
 import logging
 from datetime import datetime, timedelta
-from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import (Application, CommandHandler, CallbackQueryHandler,
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram.ext import (Application, CallbackQueryHandler, CommandHandler,
                           ContextTypes, MessageHandler, filters)
-
-from database import add_user, get_user_timezone, update_user_timezone, save_notification, get_due_notifications
-from utils import parse_timezone_offset, format_event_time, get_next_event_time
-
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
+import pytz
+import asyncpg
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-WEBHOOK_URL = os.getenv("WEBHOOK_URL")  # e.g. https://yourdomain.com/webhook
-PORT = int(os.getenv("PORT", 10000))
+DATABASE_URL = os.getenv("DATABASE_URL")
+PORT = int(os.getenv("PORT", "10000"))
 
+logging.basicConfig(level=logging.INFO)
+
+# DB Setup
+db_pool = None
+
+async def init_db():
+    global db_pool
+    db_pool = await asyncpg.create_pool(DATABASE_URL)
+    async with db_pool.acquire() as conn:
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS users (
+                user_id BIGINT PRIMARY KEY,
+                timezone TEXT
+            )
+        """)
+
+async def get_user(user_id):
+    async with db_pool.acquire() as conn:
+        return await conn.fetchrow("SELECT * FROM users WHERE user_id = $1", user_id)
+
+async def add_user(user_id, timezone):
+    async with db_pool.acquire() as conn:
+        await conn.execute("INSERT INTO users (user_id, timezone) VALUES ($1, $2)
+                            ON CONFLICT (user_id) DO UPDATE SET timezone = EXCLUDED.timezone",
+                           user_id, timezone)
+
+# FastAPI + Telegram
+app = FastAPI()
 telegram_app = Application.builder().token(BOT_TOKEN).build()
+scheduler = AsyncIOScheduler()
 
-@telegram_app.command_handler()
+# Main menu keyboard
+def main_menu_keyboard():
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("📦 Wax", callback_data="wax"),
+            InlineKeyboardButton("🧩 Shards", callback_data="shards")
+        ]
+    ])
+
+# Start command
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    add_user(user_id)
-    user_tz = get_user_timezone(user_id)
+    first_name = update.effective_user.first_name
+    user = await get_user(user_id)
 
-    if user_tz:
-        await show_main_menu(update, context)
+    if user is None:
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("🇲🇲 Myanmar", callback_data="tz_Myanmar")]
+        ])
+        await update.message.reply_text("👋 Welcome! Please choose your timezone:", reply_markup=keyboard)
     else:
-        buttons = [
-            [InlineKeyboardButton("🇲🇲 Myanmar", callback_data="tz:Asia/Yangon")],
-        ]
-        await update.message.reply_text(
-            "Welcome! Please choose your timezone or type it manually (e.g. UTC+6:30):",
-            reply_markup=InlineKeyboardMarkup(buttons)
-        )
+        await update.message.reply_text(f"👋 Hello again {first_name}! What do you want to check?", reply_markup=main_menu_keyboard())
 
-async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    keyboard = [[InlineKeyboardButton("🕯 Wax", callback_data="wax")]]
-    await update.message.reply_text("Choose an option:", reply_markup=InlineKeyboardMarkup(keyboard))
-
-@telegram_app.callback_query_handler()
-async def handle_callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# Handle timezone selection
+async def timezone_selection(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     user_id = query.from_user.id
 
-    if query.data.startswith("tz:"):
-        tz = query.data.split(":")[1]
-        update_user_timezone(user_id, tz)
-        await query.edit_message_text("✅ Timezone set successfully!")
-        await show_main_menu(update, context)
+    if query.data.startswith("tz_"):
+        tz = "Asia/Yangon" if query.data == "tz_Myanmar" else None
+        if tz:
+            await add_user(user_id, tz)
+            await query.edit_message_text("✅ Timezone set! Use /start to continue.")
+        else:
+            await query.edit_message_text("❌ Unsupported timezone.")
 
-    elif query.data == "wax":
-        keyboard = [
-            [InlineKeyboardButton("👵 Grandma", callback_data="wax:grandma")],
-            [InlineKeyboardButton("🐢 Turtle", callback_data="wax:turtle")],
-            [InlineKeyboardButton("🌋 Geyser", callback_data="wax:geyser")],
-            [InlineKeyboardButton("🔙 Back", callback_data="back:main")],
-        ]
-        await query.edit_message_text("Choose wax event:", reply_markup=InlineKeyboardMarkup(keyboard))
+# Register Handlers
+telegram_app.add_handler(CommandHandler("start", start))
+telegram_app.add_handler(CallbackQueryHandler(timezone_selection, pattern="^tz_"))
 
-    elif query.data.startswith("wax:"):
-        event = query.data.split(":")[1]
-        tz = get_user_timezone(user_id) or "Asia/Yangon"
-        next_time = get_next_event_time(event, tz)
-        now = datetime.now(parse_timezone_offset(tz))
-        diff = next_time - now
-        keyboard = [
-            [InlineKeyboardButton("🔔 Notify Me", callback_data=f"notify:{event}")],
-            [InlineKeyboardButton("🔙 Back", callback_data="wax")],
-        ]
-        await query.edit_message_text(
-            f"Next {event.capitalize()} is at {format_event_time(next_time)}\n⏳ Time left: {str(diff).split('.')[0]}",
-            reply_markup=InlineKeyboardMarkup(keyboard))
-
-    elif query.data.startswith("notify:"):
-        event = query.data.split(":")[1]
-        keyboard = [
-            [InlineKeyboardButton("1 min before", callback_data=f"setnotify:{event}:1")],
-            [InlineKeyboardButton("5 min before", callback_data=f"setnotify:{event}:5")],
-            [InlineKeyboardButton("10 min before", callback_data=f"setnotify:{event}:10")],
-            [InlineKeyboardButton("🔙 Back", callback_data=f"wax:{event}")],
-        ]
-        await query.edit_message_text("How many minutes before should I notify you?", reply_markup=InlineKeyboardMarkup(keyboard))
-
-    elif query.data.startswith("setnotify:"):
-        _, event, minutes = query.data.split(":")
-        tz = get_user_timezone(user_id) or "Asia/Yangon"
-        next_time = get_next_event_time(event, tz)
-        notify_time = next_time - timedelta(minutes=int(minutes))
-        save_notification(user_id, event, notify_time)
-        await query.edit_message_text(f"🔔 Got it! I will remind you {minutes} minutes before {event}.")
-
-    elif query.data == "back:main":
-        await show_main_menu(update, context)
-
-@telegram_app.message_handler(filters.TEXT & (~filters.COMMAND))
-async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    text = update.message.text.strip()
-    tz = parse_timezone_offset(text)
-    if tz:
-        update_user_timezone(user_id, tz.zone)
-        await update.message.reply_text("✅ Timezone set successfully!")
-        await show_main_menu(update, context)
-    else:
-        await update.message.reply_text("❌ Invalid timezone. Please try again (e.g. UTC+6:30)")
-
-# === FastAPI app ===
-
-@asynccontextmanager
-async def lifespan(app: FastAPI):
+@app.on_event("startup")
+async def on_startup():
+    await init_db()
     await telegram_app.initialize()
     await telegram_app.start()
-    yield
-    await telegram_app.stop()
+    scheduler.start()
 
-app = FastAPI(lifespan=lifespan)
+@app.on_event("shutdown")
+async def on_shutdown():
+    await telegram_app.stop()
+    await telegram_app.shutdown()
+    await db_pool.close()
 
 @app.post("/webhook")
-async def webhook(request: Request):
-    update = Update.de_json(await request.json(), telegram_app.bot)
+async def telegram_webhook(req: Request):
+    data = await req.json()
+    update = Update.de_json(data, telegram_app.bot)
     await telegram_app.process_update(update)
-    return {"ok": True}
+    return {"status": "ok"}
 
 @app.get("/")
-def root():
-    return {"message": "SkyClock Bot is live!"}
+async def root():
+    return {"status": "running"}
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run("bot:app", host="0.0.0.0", port=PORT)
