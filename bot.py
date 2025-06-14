@@ -1,4 +1,3 @@
-# ✅ Imports & Setup (Do not modify unless adding new libraries)
 import os
 import asyncio
 import logging
@@ -18,7 +17,7 @@ PORT = int(os.getenv("PORT", "10000"))
 
 logging.basicConfig(level=logging.INFO)
 
-# ✅ DB Setup (Stable - Do not modify)
+# DB Setup
 db_pool = None
 
 async def init_db():
@@ -38,20 +37,17 @@ async def get_user(user_id):
 
 async def add_user(user_id, timezone):
     async with db_pool.acquire() as conn:
-        await conn.execute(
-            """
+        await conn.execute("""
             INSERT INTO users (user_id, timezone) VALUES ($1, $2)
             ON CONFLICT (user_id) DO UPDATE SET timezone = EXCLUDED.timezone
-            """,
-            user_id, timezone
-        )
+        """, user_id, timezone)
 
-# ✅ FastAPI + Telegram App Initialization (Do not modify)
+# FastAPI + Telegram
 app = FastAPI()
 telegram_app = Application.builder().token(BOT_TOKEN).build()
 scheduler = AsyncIOScheduler()
 
-# ✅ Main menu keyboard (Safe to extend with new buttons)
+# Main menu keyboard
 def main_menu_keyboard():
     return InlineKeyboardMarkup([
         [
@@ -60,7 +56,27 @@ def main_menu_keyboard():
         ]
     ])
 
-# ✅ /start command handler
+# Wax menu
+wax_keyboard = InlineKeyboardMarkup([
+    [InlineKeyboardButton("👵 Grandma", callback_data="wax_grandma")],
+    [InlineKeyboardButton("🌋 Geyser", callback_data="wax_geyser")],
+    [InlineKeyboardButton("🐢 Turtle", callback_data="wax_turtle")],
+    [InlineKeyboardButton("⬅️ Back", callback_data="back_main")]
+])
+
+# Notify options
+notify_keyboard = InlineKeyboardMarkup([
+    [
+        InlineKeyboardButton("5 mins", callback_data="notify_5"),
+        InlineKeyboardButton("10 mins", callback_data="notify_10")
+    ],
+    [
+        InlineKeyboardButton("15 mins", callback_data="notify_15"),
+        InlineKeyboardButton("30 mins", callback_data="notify_30")
+    ]
+])
+
+# Start command
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     first_name = update.effective_user.first_name
@@ -74,7 +90,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await update.message.reply_text(f"👋 Hello again {first_name}! What do you want to check?", reply_markup=main_menu_keyboard())
 
-# ✅ Timezone selection handler
+# Handle timezone selection
 async def timezone_selection(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -88,11 +104,45 @@ async def timezone_selection(update: Update, context: ContextTypes.DEFAULT_TYPE)
         else:
             await query.edit_message_text("❌ Unsupported timezone.")
 
-# ✅ Handler Registration (Add new command/callback handlers here)
+# Wax main handler
+async def handle_wax(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    await query.edit_message_text("Choose a Wax event:", reply_markup=wax_keyboard)
+
+# Wax event detail handlers
+def event_response(event_name: str, time_str: str):
+    return f"📅 Next {event_name}: {time_str}\n⏳ Time left: ...\n\n🔔 Want a reminder?"
+
+def wax_event_keyboard():
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("🔔 Notify Me", callback_data="notify")],
+        [InlineKeyboardButton("⬅️ Back", callback_data="wax")]
+    ])
+
+async def wax_event_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    if query.data == "wax_grandma":
+        await query.edit_message_text(event_response("Grandma", "Even hours + 5 mins"), reply_markup=wax_event_keyboard())
+    elif query.data == "wax_geyser":
+        await query.edit_message_text(event_response("Geyser", "Odd hours + 35 mins"), reply_markup=wax_event_keyboard())
+    elif query.data == "wax_turtle":
+        await query.edit_message_text(event_response("Turtle", "Even hours + 20 mins"), reply_markup=wax_event_keyboard())
+
+# Notify time selection
+async def notify_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    await query.edit_message_text("⏰ How many minutes before do you want to be reminded?", reply_markup=notify_keyboard)
+
+# Register Handlers
 telegram_app.add_handler(CommandHandler("start", start))
 telegram_app.add_handler(CallbackQueryHandler(timezone_selection, pattern="^tz_"))
+telegram_app.add_handler(CallbackQueryHandler(handle_wax, pattern="^wax$"))
+telegram_app.add_handler(CallbackQueryHandler(wax_event_handler, pattern="^wax_(grandma|geyser|turtle)$"))
+telegram_app.add_handler(CallbackQueryHandler(notify_handler, pattern="^notify$"))
 
-# ✅ FastAPI Lifecycle Hooks
 @app.on_event("startup")
 async def on_startup():
     await init_db()
@@ -106,7 +156,6 @@ async def on_shutdown():
     await telegram_app.shutdown()
     await db_pool.close()
 
-# ✅ Webhook Handler
 @app.post("/webhook")
 async def telegram_webhook(req: Request):
     data = await req.json()
@@ -114,12 +163,10 @@ async def telegram_webhook(req: Request):
     await telegram_app.process_update(update)
     return {"status": "ok"}
 
-# ✅ Health Check Endpoint
 @app.get("/")
 async def root():
     return {"status": "running"}
 
-# ✅ Local Dev Server
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run("bot:app", host="0.0.0.0", port=PORT)
