@@ -5,8 +5,10 @@ from datetime import datetime, timedelta
 
 from fastapi import FastAPI, Request
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
-from telegram.ext import (Application, CallbackQueryHandler, CommandHandler,
-                          ContextTypes, MessageHandler, filters)
+from telegram.ext import (
+    Application, CallbackQueryHandler, CommandHandler,
+    ContextTypes, MessageHandler, filters
+)
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 import pytz
 import asyncpg
@@ -20,12 +22,13 @@ logging.basicConfig(level=logging.INFO)
 # DB Setup
 db_pool = None
 
-async def init_db():
-    global db_pool
-    db_pool = await asyncpg.create_pool(DATABASE_URL)
+async def reset_users_table():
     async with db_pool.acquire() as conn:
+        # Drop old table if exists
+        await conn.execute("DROP TABLE IF EXISTS users")
+        # Create new users table with correct schema
         await conn.execute("""
-            CREATE TABLE IF NOT EXISTS users (
+            CREATE TABLE users (
                 user_id BIGINT PRIMARY KEY,
                 timezone TEXT
             )
@@ -37,9 +40,10 @@ async def get_user(user_id):
 
 async def add_user(user_id, timezone):
     async with db_pool.acquire() as conn:
-        await conn.execute("INSERT INTO users (user_id, timezone) VALUES ($1, $2) \
-                            ON CONFLICT (user_id) DO UPDATE SET timezone = EXCLUDED.timezone",
-                           user_id, timezone)
+        await conn.execute("""
+            INSERT INTO users (user_id, timezone) VALUES ($1, $2)
+            ON CONFLICT (user_id) DO UPDATE SET timezone = EXCLUDED.timezone
+        """, user_id, timezone)
 
 # FastAPI + Telegram
 app = FastAPI()
@@ -89,7 +93,9 @@ telegram_app.add_handler(CallbackQueryHandler(timezone_selection, pattern="^tz_"
 
 @app.on_event("startup")
 async def on_startup():
-    await init_db()
+    global db_pool
+    db_pool = await asyncpg.create_pool(DATABASE_URL)
+    await reset_users_table()  # Reset the users table on startup
     await telegram_app.initialize()
     await telegram_app.start()
     scheduler.start()
