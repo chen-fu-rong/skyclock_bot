@@ -1,160 +1,153 @@
 import os
 import logging
-import asyncpg
-import asyncio
-from urllib.parse import urlparse
+from datetime import datetime, timedelta
 from fastapi import FastAPI, Request
-from contextlib import asynccontextmanager
-from telegram import Update
-from telegram.ext import Application, CommandHandler, ContextTypes
-from telegram.error import InvalidToken
-from fastapi.responses import JSONResponse
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import Application, CallbackQueryHandler, CommandHandler, ContextTypes, MessageHandler, filters
+import uvicorn
 
-# Set up logging
-logging.basicConfig(
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
-)
+# Logging
+logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Initialize FastAPI app
+# FastAPI app
 app = FastAPI()
+PORT = int(os.getenv("PORT", "10000"))
+BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 
-# Global variables
-db_pool = None
-telegram_app = None
+# Dummy DB (replace with real database code)
+user_timezones = {}  # user_id: offset
+user_reminders = []  # list of (user_id, event, notify_time)
 
-# Lifespan handler for startup and shutdown
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    global db_pool, telegram_app
-    # Startup: Initialize Telegram bot
-    bot_token = os.getenv("TELEGRAM_BOT_TOKEN")
-    logger.info("Checking TELEGRAM_BOT_TOKEN environment variable")
-    if not bot_token:
-        logger.error("TELEGRAM_BOT_TOKEN environment variable is not set")
-        raise ValueError("TELEGRAM_BOT_TOKEN environment variable is not set")
-    
-    logger.info("Attempting to initialize Telegram bot")
-    try:
-        telegram_app = (
-            Application.builder()
-            .token(bot_token)
-            .build()
-        )
-        await telegram_app.initialize()
-        await telegram_app.start()
-        telegram_app.add_handler(CommandHandler("start", start))
-        telegram_app.add_handler(CommandHandler("help", help_command))
-        logger.info("Telegram bot initialized successfully")
-    except InvalidToken as e:
-        logger.error(f"Invalid Telegram bot token: {e}")
-        raise
-    except Exception as e:
-        logger.error(f"Failed to initialize Telegram bot: {e}")
-        raise
+# Helper functions
+def get_next_event_time(event: str, tz_offset_minutes: int) -> datetime:
+    now = datetime.utcnow() + timedelta(minutes=tz_offset_minutes)
+    hour = now.hour
+    minute = now.minute
+    next_time = now.replace(second=0, microsecond=0)
 
-    # Start database initialization in background
-    asyncio.create_task(init_db_background())
+    if event == "geyser":
+        if hour % 2 == 0:
+            hour += 1
+        next_time = next_time.replace(hour=hour, minute=35)
+        if next_time <= now:
+            next_time += timedelta(hours=2)
 
-    yield
+    elif event == "grandma":
+        if hour % 2 != 0:
+            hour += 1
+        next_time = next_time.replace(hour=hour, minute=5)
+        if next_time <= now:
+            next_time += timedelta(hours=2)
 
-    # Shutdown
-    if db_pool:
-        await db_pool.close()
-        logger.info("Database pool closed")
-    if telegram_app:
-        await telegram_app.stop()
-        await telegram_app.shutdown()
-        logger.info("Telegram bot stopped")
+    elif event == "turtle":
+        if hour % 2 != 0:
+            hour += 1
+        next_time = next_time.replace(hour=hour, minute=20)
+        if next_time <= now:
+            next_time += timedelta(hours=2)
 
-app.router.lifespan_context = lifespan
+    return next_time
 
-# Initialize database connection pool in the background
-async def init_db_background():
-    global db_pool
-    DATABASE_URL = os.getenv("DATABASE_URL")
-    logger.info(f"DATABASE_URL: {DATABASE_URL}")
-    if not DATABASE_URL:
-        logger.error("DATABASE_URL environment variable is not set")
-        return
-    
-    retries = 5
-    for attempt in range(retries):
-        try:
-            parsed = urlparse(DATABASE_URL)
-            db_pool = await asyncpg.create_pool(
-                host=parsed.hostname,
-                port=parsed.port,
-                user=parsed.username,
-                password=parsed.password,
-                database=parsed.path.lstrip('/'),
-                ssl="require",
-                min_size=1,
-                max_size=10,
-                command_timeout=120,
-                server_settings={'connect_timeout': '120'}
-            )
-            logger.info("Database pool created successfully")
-            return
-        except asyncpg.exceptions.ConnectionFailureError as e:
-            logger.error(f"Attempt {attempt + 1} - Connection failure: {e}")
-        except asyncio.TimeoutError as e:
-            logger.error(f"Attempt {attempt + 1} - Connection timed out: {e}")
-        except Exception as e:
-            logger.error(f"Attempt {attempt + 1} - Unexpected error: {e}")
-        
-        if attempt < retries - 1:
-            await asyncio.sleep(10)
-        else:
-            logger.error("Failed to initialize database after multiple attempts")
+async def get_user_timezone(user_id: int) -> int:
+    return user_timezones.get(user_id, 390)  # default to UTC+6:30
 
-# Example database query
-async def store_user(user_id: int, username: str):
-    if not db_pool:
-        logger.error("Database pool not initialized")
-        return
-    async with db_pool.acquire() as connection:
-        await connection.execute(
-            """
-            INSERT INTO users (user_id, username)
-            VALUES ($1, $2)
-            ON CONFLICT (user_id) DO UPDATE
-            SET username = $2
-            """,
-            user_id,
-            username,
-        )
-
-# Telegram command handlers
+# Telegram handlers
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
-    await store_user(user.id, user.username or f"user_{user.id}")
-    await update.message.reply_text("Welcome to SkyClock Bot! Use /help to see commands.")
+    await update.message.reply_text("Welcome! Please send your timezone offset in minutes (e.g. 390 for UTC+6:30)")
 
-async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Available commands:\n/start - Start the bot\n/help - Show this message")
-
-# FastAPI webhook endpoint
-@app.post("/webhook")
-async def webhook(request: Request):
-    global telegram_app
+async def handle_offset(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
-        json_data = await request.json()
-        update = Update.de_json(json_data, telegram_app.bot)
-        if update:
-            await telegram_app.process_update(update)
-        return JSONResponse(content={"status": "ok"})
-    except Exception as e:
-        logger.error(f"Error processing webhook: {e}")
-        return JSONResponse(content={"status": "error"}, status_code=500)
+        offset = int(update.message.text.strip())
+        user_timezones[update.effective_user.id] = offset
+        await update.message.reply_text(f"Timezone set to UTC+{offset/60:.2f} hours.")
+    except ValueError:
+        await update.message.reply_text("Please send a valid number.")
 
-# Health check endpoint for Render
-@app.get("/health")
-async def health():
-    return {"status": "ok", "database_connected": bool(db_pool), "telegram_initialized": bool(telegram_app)}
+async def wax(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    keyboard = [
+        [InlineKeyboardButton("\U0001F6C1 Geyser", callback_data="event_geyser")],
+        [InlineKeyboardButton("\U0001F56F Grandma", callback_data="event_grandma")],
+        [InlineKeyboardButton("\U0001F422 Turtle", callback_data="event_turtle")]
+    ]
+    await update.message.reply_text("Choose an event:", reply_markup=InlineKeyboardMarkup(keyboard))
+
+async def handle_event_query(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    user_id = query.from_user.id
+    event = query.data.split("_")[1]
+
+    offset = await get_user_timezone(user_id)
+    next_time = get_next_event_time(event, offset)
+    remaining = next_time - (datetime.utcnow() + timedelta(minutes=offset))
+    mins = int(remaining.total_seconds() // 60)
+
+    keyboard = [[InlineKeyboardButton("\U0001F514 Notify me", callback_data=f"notify_{event}")]]
+    await query.edit_message_text(
+        text=f"Next {event.title()} Event: {next_time.strftime('%H:%M')} ({mins} minutes left)",
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
+
+async def handle_notify(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    event = query.data.split("_")[1]
+    context.user_data["event_to_notify"] = event
+    await query.edit_message_text("How many minutes before the event should I notify you? (Enter a number)")
+
+async def handle_notify_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    event = context.user_data.get("event_to_notify")
+    if not event:
+        return
+    try:
+        minutes_before = int(update.message.text.strip())
+        offset = await get_user_timezone(user_id)
+        event_time = get_next_event_time(event, offset)
+        notify_time = event_time - timedelta(minutes=minutes_before)
+        user_reminders.append((user_id, event, notify_time))
+        await update.message.reply_text(f"Okay, I'll remind you {minutes_before} minutes before the {event.title()} event.")
+    except ValueError:
+        await update.message.reply_text("Please send a valid number.")
+
+# Background task for reminders
+async def reminder_loop(app: Application):
+    while True:
+        now = datetime.utcnow()
+        to_notify = [r for r in user_reminders if r[2] <= now]
+        for user_id, event, _ in to_notify:
+            try:
+                await app.bot.send_message(chat_id=user_id, text=f"Reminder: {event.title()} event is coming soon!")
+            except Exception as e:
+                logger.error(f"Failed to send reminder: {e}")
+            user_reminders.remove((user_id, event, _))
+        await asyncio.sleep(60)
+
+# App startup
+@app.on_event("startup")
+async def on_startup():
+    logger.info("Starting Telegram bot...")
+    application = Application.builder().token(BOT_TOKEN).build()
+
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("wax", wax))
+    application.add_handler(CallbackQueryHandler(handle_event_query, pattern="^event_"))
+    application.add_handler(CallbackQueryHandler(handle_notify, pattern="^notify_"))
+    application.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_notify_input))
+    application.add_handler(MessageHandler(filters.TEXT & filters.Regex(r'^[-\d]+$'), handle_offset))
+
+    import asyncio
+    asyncio.create_task(reminder_loop(application))
+
+    await application.initialize()
+    await application.start()
+    logger.info("Telegram bot started.")
+
+@app.get("/")
+async def root():
+    return {"status": "ok"}
 
 if __name__ == "__main__":
-    import uvicorn
-    port = int(os.getenv("PORT", 10000))
-    logger.info(f"Starting server on port: {port}")
-    uvicorn.run(app, host="0.0.0.0", port=port)
+    logger.info(f"Starting server on port: {PORT}")
+    uvicorn.run("bot:app", host="0.0.0.0", port=PORT, reload=False)
