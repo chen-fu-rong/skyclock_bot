@@ -1,3 +1,4 @@
+# ✅ Imports & Setup (Do not modify unless adding new libraries)
 import os
 import asyncio
 import logging
@@ -6,7 +7,9 @@ from datetime import datetime, timedelta
 from fastapi import FastAPI, Request
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import (Application, CallbackQueryHandler, CommandHandler,
-                          ContextTypes)
+                          ContextTypes, MessageHandler, filters)
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
+import pytz
 import asyncpg
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
@@ -15,7 +18,7 @@ PORT = int(os.getenv("PORT", "10000"))
 
 logging.basicConfig(level=logging.INFO)
 
-# DB Setup
+# ✅ DB Setup (Stable - Do not modify)
 db_pool = None
 
 async def init_db():
@@ -36,16 +39,19 @@ async def get_user(user_id):
 async def add_user(user_id, timezone):
     async with db_pool.acquire() as conn:
         await conn.execute(
-            "INSERT INTO users (user_id, timezone) VALUES ($1, $2) "
-            "ON CONFLICT (user_id) DO UPDATE SET timezone = EXCLUDED.timezone",
+            """
+            INSERT INTO users (user_id, timezone) VALUES ($1, $2)
+            ON CONFLICT (user_id) DO UPDATE SET timezone = EXCLUDED.timezone
+            """,
             user_id, timezone
         )
 
-# FastAPI + Telegram
+# ✅ FastAPI + Telegram App Initialization (Do not modify)
 app = FastAPI()
 telegram_app = Application.builder().token(BOT_TOKEN).build()
+scheduler = AsyncIOScheduler()
 
-# Main menu keyboard
+# ✅ Main menu keyboard (Safe to extend with new buttons)
 def main_menu_keyboard():
     return InlineKeyboardMarkup([
         [
@@ -54,7 +60,7 @@ def main_menu_keyboard():
         ]
     ])
 
-# Start command
+# ✅ /start command handler
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     first_name = update.effective_user.first_name
@@ -68,7 +74,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await update.message.reply_text(f"👋 Hello again {first_name}! What do you want to check?", reply_markup=main_menu_keyboard())
 
-# Handle timezone selection
+# ✅ Timezone selection handler
 async def timezone_selection(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -82,31 +88,17 @@ async def timezone_selection(update: Update, context: ContextTypes.DEFAULT_TYPE)
         else:
             await query.edit_message_text("❌ Unsupported timezone.")
 
-# Wax button handler
-async def wax_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    # TODO: Replace this with your wax event logic
-    await query.edit_message_text("Wax events coming soon! 🎉")
-
-# Shards button handler
-async def shards_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    # TODO: Replace this with your shards info logic
-    await query.edit_message_text("Shard info coming soon! 🧩")
-
-# Register Handlers
+# ✅ Handler Registration (Add new command/callback handlers here)
 telegram_app.add_handler(CommandHandler("start", start))
 telegram_app.add_handler(CallbackQueryHandler(timezone_selection, pattern="^tz_"))
-telegram_app.add_handler(CallbackQueryHandler(wax_callback, pattern="^wax$"))
-telegram_app.add_handler(CallbackQueryHandler(shards_callback, pattern="^shards$"))
 
+# ✅ FastAPI Lifecycle Hooks
 @app.on_event("startup")
 async def on_startup():
     await init_db()
     await telegram_app.initialize()
     await telegram_app.start()
+    scheduler.start()
 
 @app.on_event("shutdown")
 async def on_shutdown():
@@ -114,6 +106,7 @@ async def on_shutdown():
     await telegram_app.shutdown()
     await db_pool.close()
 
+# ✅ Webhook Handler
 @app.post("/webhook")
 async def telegram_webhook(req: Request):
     data = await req.json()
@@ -121,10 +114,12 @@ async def telegram_webhook(req: Request):
     await telegram_app.process_update(update)
     return {"status": "ok"}
 
+# ✅ Health Check Endpoint
 @app.get("/")
 async def root():
     return {"status": "running"}
 
+# ✅ Local Dev Server
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run("bot:app", host="0.0.0.0", port=PORT)
