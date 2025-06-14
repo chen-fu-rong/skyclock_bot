@@ -5,12 +5,8 @@ from datetime import datetime, timedelta
 
 from fastapi import FastAPI, Request
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
-from telegram.ext import (
-    Application, CallbackQueryHandler, CommandHandler,
-    ContextTypes, MessageHandler, filters
-)
-from apscheduler.schedulers.asyncio import AsyncIOScheduler
-import pytz
+from telegram.ext import (Application, CallbackQueryHandler, CommandHandler,
+                          ContextTypes)
 import asyncpg
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
@@ -22,13 +18,12 @@ logging.basicConfig(level=logging.INFO)
 # DB Setup
 db_pool = None
 
-async def reset_users_table():
+async def init_db():
+    global db_pool
+    db_pool = await asyncpg.create_pool(DATABASE_URL)
     async with db_pool.acquire() as conn:
-        # Drop old table if exists
-        await conn.execute("DROP TABLE IF EXISTS users")
-        # Create new users table with correct schema
         await conn.execute("""
-            CREATE TABLE users (
+            CREATE TABLE IF NOT EXISTS users (
                 user_id BIGINT PRIMARY KEY,
                 timezone TEXT
             )
@@ -40,15 +35,15 @@ async def get_user(user_id):
 
 async def add_user(user_id, timezone):
     async with db_pool.acquire() as conn:
-        await conn.execute("""
-            INSERT INTO users (user_id, timezone) VALUES ($1, $2)
-            ON CONFLICT (user_id) DO UPDATE SET timezone = EXCLUDED.timezone
-        """, user_id, timezone)
+        await conn.execute(
+            "INSERT INTO users (user_id, timezone) VALUES ($1, $2) "
+            "ON CONFLICT (user_id) DO UPDATE SET timezone = EXCLUDED.timezone",
+            user_id, timezone
+        )
 
 # FastAPI + Telegram
 app = FastAPI()
 telegram_app = Application.builder().token(BOT_TOKEN).build()
-scheduler = AsyncIOScheduler()
 
 # Main menu keyboard
 def main_menu_keyboard():
@@ -87,18 +82,31 @@ async def timezone_selection(update: Update, context: ContextTypes.DEFAULT_TYPE)
         else:
             await query.edit_message_text("❌ Unsupported timezone.")
 
+# Wax button handler
+async def wax_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    # TODO: Replace this with your wax event logic
+    await query.edit_message_text("Wax events coming soon! 🎉")
+
+# Shards button handler
+async def shards_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    # TODO: Replace this with your shards info logic
+    await query.edit_message_text("Shard info coming soon! 🧩")
+
 # Register Handlers
 telegram_app.add_handler(CommandHandler("start", start))
 telegram_app.add_handler(CallbackQueryHandler(timezone_selection, pattern="^tz_"))
+telegram_app.add_handler(CallbackQueryHandler(wax_callback, pattern="^wax$"))
+telegram_app.add_handler(CallbackQueryHandler(shards_callback, pattern="^shards$"))
 
 @app.on_event("startup")
 async def on_startup():
-    global db_pool
-    db_pool = await asyncpg.create_pool(DATABASE_URL)
-    await reset_users_table()  # Reset the users table on startup
+    await init_db()
     await telegram_app.initialize()
     await telegram_app.start()
-    scheduler.start()
 
 @app.on_event("shutdown")
 async def on_shutdown():
