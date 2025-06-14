@@ -1,58 +1,36 @@
 import os
-import re
 import logging
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI, Request
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
-    ApplicationBuilder, ContextTypes,
-    CommandHandler, CallbackQueryHandler,
-    MessageHandler, filters
+    ApplicationBuilder, CommandHandler, MessageHandler, filters,
+    ContextTypes, CallbackQueryHandler
 )
-
-logging.basicConfig(level=logging.INFO)
 
 BOT_TOKEN = os.getenv("BOT_TOKEN") or "YOUR_BOT_TOKEN"
 WEBHOOK_PATH = "/webhook"
 PORT = int(os.getenv("PORT", "10000"))
 
-app = FastAPI()
+logging.basicConfig(level=logging.INFO)
 
-# Store user timezones in memory: user_id -> tz string
-user_timezones = {}
-
-# Telegram application instance
+# Initialize your Telegram bot application here
 telegram_app = ApplicationBuilder().token(BOT_TOKEN).build()
 
-def timezone_keyboard():
-    return InlineKeyboardMarkup(
-        [[InlineKeyboardButton("Myanmar (UTC+06:30)", callback_data="timezone_+0630")]]
-    )
+# Lifespan context to replace deprecated on_event startup/shutdown
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    logging.info("Bot started")
+    yield
+    await telegram_app.shutdown()
+    logging.info("Bot stopped")
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "Welcome! Please select your timezone or type it in (format +HHMM or -HHMM):",
-        reply_markup=timezone_keyboard()
-    )
+app = FastAPI(lifespan=lifespan)
 
-async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    if query.data.startswith("timezone_"):
-        tz = query.data.split("_")[1]
-        user_id = query.from_user.id
-        user_timezones[user_id] = tz
-        await query.edit_message_text(f"Timezone set to UTC{tz}")
-
-async def manual_timezone(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.message.from_user.id
-    text = update.message.text.strip()
-    if re.fullmatch(r"[+-]\d{4}", text):
-        user_timezones[user_id] = text
-        await update.message.reply_text(f"Timezone set to UTC{text}")
-    else:
-        await update.message.reply_text(
-            "Invalid format. Enter timezone as +HHMM or -HHMM, e.g. +0700"
-        )
+@app.get("/")
+async def root():
+    return {"message": "Bot is running!"}
 
 @app.post(WEBHOOK_PATH)
 async def telegram_webhook(request: Request):
@@ -61,20 +39,51 @@ async def telegram_webhook(request: Request):
     await telegram_app.update_queue.put(update)
     return {"ok": True}
 
-@app.on_event("startup")
-async def on_startup():
-    logging.info("Bot started")
+# Example start handler asking for timezone with Myanmar quick buttons
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    keyboard = [
+        [
+            InlineKeyboardButton("🕰 Myanmar (UTC+6:30)", callback_data="tz:Myanmar"),
+        ],
+        [
+            InlineKeyboardButton("Other", callback_data="tz:Other"),
+        ],
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    await update.message.reply_text(
+        "Welcome! Please select your timezone or type it.",
+        reply_markup=reply_markup,
+    )
 
-@app.on_event("shutdown")
-async def on_shutdown():
-    await telegram_app.shutdown()
-    logging.info("Bot stopped")
+# Callback query handler for timezone selection buttons
+async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    data = query.data
 
-# Register handlers
+    if data == "tz:Myanmar":
+        # Save user timezone as Myanmar +6:30
+        # Save to your DB or dict here, e.g.:
+        user_id = query.from_user.id
+        context.user_data["timezone"] = "+0630"
+        await query.edit_message_text(text="Timezone set to Myanmar (UTC+6:30). Thank you!")
+    elif data == "tz:Other":
+        await query.edit_message_text(text="Please type your timezone offset like +0700 or -0500.")
+
+# Message handler to receive typed timezone offset
+async def timezone_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    tz_text = update.message.text.strip()
+    if (len(tz_text) == 5 and (tz_text[0] == "+" or tz_text[0] == "-")
+        and tz_text[1:].isdigit()):
+        context.user_data["timezone"] = tz_text
+        await update.message.reply_text(f"Timezone set to {tz_text}. Thank you!")
+    else:
+        await update.message.reply_text("Invalid format. Please type timezone like +0700 or -0500.")
+
 telegram_app.add_handler(CommandHandler("start", start))
-telegram_app.add_handler(CallbackQueryHandler(button_callback))
-telegram_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, manual_timezone))
+telegram_app.add_handler(CallbackQueryHandler(button_handler, pattern="^tz:"))
+telegram_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, timezone_text))
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=PORT)
+    uvicorn.run("bot:app", host="0.0.0.0", port=PORT, log_level="info")
