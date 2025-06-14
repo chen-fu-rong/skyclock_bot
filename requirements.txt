@@ -6,3 +6,4 @@ python-dotenv
 asyncpg
 python-telegram-bot==20.7
 pytz
+apscheduler
