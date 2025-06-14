@@ -1,6 +1,9 @@
-apscheduler
 fastapi
 uvicorn
-python-telegram-bot==20.7
+sqlalchemy
+psycopg2-binary
+python-dotenv
 asyncpg
-
+python-telegram-bot==20.7
+pytz
+apscheduler
