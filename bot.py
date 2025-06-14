@@ -37,7 +37,7 @@ async def get_user(user_id):
 
 async def add_user(user_id, timezone):
     async with db_pool.acquire() as conn:
-        await conn.execute("INSERT INTO users (user_id, timezone) VALUES ($1, $2)
+        await conn.execute("INSERT INTO users (user_id, timezone) VALUES ($1, $2) \
                             ON CONFLICT (user_id) DO UPDATE SET timezone = EXCLUDED.timezone",
                            user_id, timezone)
 
