@@ -113,27 +113,45 @@ def get_next_event_time(event: str, user_offset: str):
     hour = now.hour
 
     if event == "grandma":
+        # Even hours + 5 mins (e.g., 0:05, 2:05, 4:05…)
+        next_hour = hour + (0 if hour % 2 == 0 and now.minute < 5 else 1 if hour % 2 == 1 else 2)
         minute = 5
-        next_hour = hour + (1 if hour % 2 == 1 else 0)
     elif event == "geyser":
+        # Odd hours + 35 mins (e.g., 1:35, 3:35, 5:35…)
+        if hour % 2 == 1 and now.minute < 35:
+            next_hour = hour
+        else:
+            next_hour = hour + (1 if hour % 2 == 0 else 2)
         minute = 35
-        next_hour = hour + (1 if hour % 2 == 0 else 0)
     elif event == "turtle":
-        minute = 20
-        next_hour = hour + (2 if hour % 2 == 1 else 0)
+        # Every 4 hours starting from 0:20 (e.g., 0:20, 4:20, 8:20…)
+        base_hours = [0, 4, 8, 12, 16, 20]
+        future_times = [
+            now.replace(hour=h, minute=20, second=0, microsecond=0)
+            for h in base_hours if now < now.replace(hour=h, minute=20, second=0, microsecond=0)
+        ]
+        if future_times:
+            next_time = future_times[0]
+        else:
+            next_time = now.replace(hour=0, minute=20, second=0, microsecond=0) + timedelta(days=1)
     else:
         return "Unknown event"
 
-    next_time = now.replace(hour=next_hour % 24, minute=minute, second=0, microsecond=0)
-    if next_time <= now:
-        next_time += timedelta(hours=2)
+    if event != "turtle":
+        next_time = now.replace(hour=next_hour % 24, minute=minute, second=0, microsecond=0)
+        if next_time <= now:
+            next_time += timedelta(hours=2)
 
+    # Convert to user's local time
     sign = 1 if user_offset.startswith('+') else -1
     h, m = map(int, user_offset[1:].split(":"))
     offset_delta = timedelta(hours=sign * h, minutes=sign * m)
     local_time = next_time + offset_delta
+
+    # Time remaining
     remaining = int((next_time - now).total_seconds() // 60)
     return f"{local_time.strftime('%H:%M')} (in {remaining} mins)"
+
 
 # === EVENT CALLBACKS ===
 async def handle_event(update: Update, context: ContextTypes.DEFAULT_TYPE):
