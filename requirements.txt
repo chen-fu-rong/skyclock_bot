@@ -7,3 +7,4 @@ asyncpg
 python-telegram-bot==20.7
 pytz
 apscheduler
+python-telegram-bot[webhooks]
