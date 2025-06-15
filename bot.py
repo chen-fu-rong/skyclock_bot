@@ -1,195 +1,190 @@
 import os
 import logging
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, time as dt_time
 
 from fastapi import FastAPI, Request
-from telegram import (
-    InlineKeyboardButton,
-    InlineKeyboardMarkup,
-    Update,
-    constants,
-)
-from telegram.ext import (
-    Application,
-    CallbackQueryHandler,
-    CommandHandler,
-    ContextTypes,
-    MessageHandler,
-    filters,
-)
-from sqlalchemy import Column, Integer, String, create_engine, select
-from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import sessionmaker
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram.ext import (Application, CallbackContext, CallbackQueryHandler,
+                          CommandHandler, ContextTypes, MessageHandler, filters)
+from zoneinfo import ZoneInfo
+import pytz
+import asyncpg
+import re
 
-# --- Config ---
-TOKEN = os.getenv("BOT_TOKEN")
-RENDER = os.getenv("RENDER", "true") == "true"
-DEFAULT_OFFSET = "+0630"
+BOT_TOKEN = os.getenv("BOT_TOKEN") or "YOUR_BOT_TOKEN"
+DATABASE_URL = os.getenv("DATABASE_URL") or "YOUR_DATABASE_URL"
+WEBHOOK_URL = os.getenv("WEBHOOK_URL") or "YOUR_WEBHOOK_URL"
+WEBHOOK_PATH = "/webhook"
+PORT = int(os.getenv("PORT", 10000))
 
-# --- DB Setup ---
-DATABASE_URL = os.getenv("DATABASE_URL")
-engine = create_engine(DATABASE_URL)
-Session = sessionmaker(bind=engine)
-Base = declarative_base()
+default_offset = "+0630"
+TIMEZONE_MAP = {
+    "Myanmar 🇲🇲 (MMT +06:30)": "+0630",
+    "Other (manual input)": "manual"
+}
 
-class User(Base):
-    __tablename__ = "users"
-    id = Column(Integer, primary_key=True)
-    tz_offset = Column(String)
-
-Base.metadata.create_all(engine)
-
-# --- Logging ---
 logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
 
-# --- App Setup ---
 app = FastAPI()
+bot_app = Application.builder().token(BOT_TOKEN).build()
 
-# --- Telegram App ---
-telegram_app = Application.builder().token(TOKEN).build()
+user_timezones = {}  # fallback for in-memory use
 
-# --- Timezone Helper ---
-def parse_offset(offset_str: str) -> timezone:
-    try:
-        sign = 1 if offset_str.startswith("+") else -1
-        hours = int(offset_str[1:3])
-        minutes = int(offset_str[3:5])
-        return timezone(timedelta(hours=sign * hours, minutes=sign * minutes))
-    except:
-        return parse_offset(DEFAULT_OFFSET)
+# DB functions
+async def init_db():
+    bot_app.db = await asyncpg.connect(DATABASE_URL)
+    await bot_app.db.execute("""
+        CREATE TABLE IF NOT EXISTS users (
+            user_id BIGINT PRIMARY KEY,
+            timezone TEXT
+        )
+    """)
 
-def get_user_offset(user_id: int) -> timezone:
-    session = Session()
-    user = session.get(User, user_id)
-    session.close()
-    if user:
-        return parse_offset(user.tz_offset)
-    return parse_offset(DEFAULT_OFFSET)
+async def set_timezone(user_id: int, offset: str):
+    await bot_app.db.execute("""
+        INSERT INTO users (user_id, timezone)
+        VALUES ($1, $2)
+        ON CONFLICT (user_id)
+        DO UPDATE SET timezone = $2
+    """, user_id, offset)
 
-# --- Keyboard Buttons ---
+async def get_timezone(user_id: int) -> str:
+    row = await bot_app.db.fetchrow("SELECT timezone FROM users WHERE user_id=$1", user_id)
+    return row["timezone"] if row else default_offset
+
+# --- Time Helpers ---
+def get_now(offset):
+    sign = 1 if offset.startswith('+') else -1
+    hours = int(offset[1:3])
+    minutes = int(offset[3:])
+    return datetime.utcnow() + timedelta(hours=sign * hours, minutes=sign * minutes)
+
+def next_event_time(event_minutes: int, offset: str, even_hour: bool = True):
+    now = get_now(offset)
+    hour = now.hour
+    base = hour + 1 if now.minute >= event_minutes else hour
+    if even_hour:
+        base = base + (base % 2)  # make even
+    else:
+        base = base + (1 - base % 2)  # make odd
+    next_time = now.replace(hour=base % 24, minute=event_minutes, second=0, microsecond=0)
+    if next_time < now:
+        next_time += timedelta(hours=2)
+    return next_time
+
+def format_event(name: str, time: datetime):
+    now = time - timedelta(hours=0)
+    delta = time - now
+    hours, remainder = divmod(int(delta.total_seconds()), 3600)
+    minutes = remainder // 60
+    return (
+        f"Next {name}:
+"
+        f"{time.strftime('%I:%M %p')} ({hours}h {minutes}m left)"
+    )
+
+# --- UI Keyboards ---
 def main_menu_kb():
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("🕯 Wax Events", callback_data="wax")],
-    ])
-
-def wax_kb():
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton("👵 Grandma", callback_data="grandma")],
-        [InlineKeyboardButton("🌋 Geyser", callback_data="geyser")],
-        [InlineKeyboardButton("🌿 Turtle", callback_data="turtle")],
-        [InlineKeyboardButton("⬅ Back", callback_data="back")],
+        [InlineKeyboardButton("Wax 🌟", callback_data="wax")]
     ])
 
 def timezone_kb():
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("🇲🇲 Myanmar", callback_data="tz_mm")],
+        [InlineKeyboardButton(k, callback_data=f"tz:{v}") for k, v in TIMEZONE_MAP.items()]
     ])
 
-# --- Wax Event Logic ---
-def get_next_event(now: datetime, minute: int, even: bool) -> datetime:
-    base = now.replace(minute=0, second=0, microsecond=0)
-    hour = base.hour + (1 if now.minute >= minute else 0)
-    if even:
-        hour += hour % 2
+def wax_kb():
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("🍷 Grandma", callback_data="grandma"),
+            InlineKeyboardButton("🍊 Geyser", callback_data="geyser"),
+            InlineKeyboardButton("🌿 Turtle", callback_data="turtle")
+        ],
+        [InlineKeyboardButton("⬅️ Back", callback_data="back")]
+    ])
+
+# --- Handlers ---
+async def start(update: Update, context: CallbackContext):
+    user_id = update.effective_user.id
+    offset = await get_timezone(user_id)
+    if not offset:
+        await update.message.reply_text(
+            "Please choose your timezone:", reply_markup=timezone_kb()
+        )
     else:
-        hour += (hour + 1) % 2
-    return base.replace(hour=hour, minute=minute)
+        await update.message.reply_text(
+            "Main Menu:", reply_markup=main_menu_kb()
+        )
 
-def format_event(name: str, now: datetime, target: datetime) -> str:
-    remaining = target - now
-    return f"Next {name}:
-🕒 {target.strftime('%I:%M %p')} ({remaining.seconds // 60} min left)"
-
-def get_event_info(name: str, offset: timezone) -> str:
-    now = datetime.now(offset)
-    if name == "grandma":
-        t = get_next_event(now, 5, even=True)
-        emoji = "👵"
-    elif name == "geyser":
-        t = get_next_event(now, 35, even=False)
-        emoji = "🌋"
-    elif name == "turtle":
-        t = get_next_event(now, 20, even=True)
-        emoji = "🌿"
-    else:
-        return "Unknown event."
-    return format_event(f"{emoji} {name.title()}", now, t)
-
-# --- Telegram Handlers ---
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    session = Session()
-    user = session.get(User, update.effective_user.id)
-    if user:
-        await update.message.reply_text("Welcome back!", reply_markup=main_menu_kb())
-    else:
-        await update.message.reply_text("Choose your timezone:", reply_markup=timezone_kb())
-    session.close()
-
-async def timezone_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def timezone_handler(update: Update, context: CallbackContext):
     query = update.callback_query
     await query.answer()
-    if query.data == "tz_mm":
-        offset = DEFAULT_OFFSET
-        session = Session()
-        user = session.get(User, query.from_user.id)
-        if user:
-            user.tz_offset = offset
-        else:
-            user = User(id=query.from_user.id, tz_offset=offset)
-            session.add(user)
-        session.commit()
-        session.close()
-        await query.edit_message_text("Timezone set to Myanmar!", reply_markup=main_menu_kb())
+    user_id = query.from_user.id
+    choice = query.data.split(":")[1]
 
-async def manual_tz(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    offset = update.message.text.strip()
-    if len(offset) == 5 and (offset.startswith("+") or offset.startswith("-")):
-        session = Session()
-        user = session.get(User, update.effective_user.id)
-        if user:
-            user.tz_offset = offset
-        else:
-            user = User(id=update.effective_user.id, tz_offset=offset)
-            session.add(user)
-        session.commit()
-        session.close()
-        await update.message.reply_text("Timezone updated!", reply_markup=main_menu_kb())
+    if choice == "manual":
+        await query.edit_message_text("Send your timezone offset in +HHMM or -HHMM format:")
+        context.user_data["awaiting_manual"] = True
     else:
-        await update.message.reply_text("Invalid format. Use format like +0630 or -0400")
+        await set_timezone(user_id, choice)
+        await query.edit_message_text("Timezone set!", reply_markup=main_menu_kb())
 
-async def wax_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.callback_query.answer()
-    await update.callback_query.edit_message_text("Choose an event:", reply_markup=wax_kb())
+async def manual_timezone_input(update: Update, context: CallbackContext):
+    if context.user_data.get("awaiting_manual"):
+        match = re.match(r"^[+-]\d{4}$", update.message.text.strip())
+        if match:
+            offset = update.message.text.strip()
+            await set_timezone(update.effective_user.id, offset)
+            await update.message.reply_text("Timezone set!", reply_markup=main_menu_kb())
+            context.user_data["awaiting_manual"] = False
+        else:
+            await update.message.reply_text("Invalid format. Use +HHMM or -HHMM")
 
-async def event_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def wax_handler(update: Update, context: CallbackContext):
     query = update.callback_query
     await query.answer()
-    event = query.data
-    offset = get_user_offset(query.from_user.id)
-    text = get_event_info(event, offset)
-    await query.edit_message_text(text, reply_markup=wax_kb())
+    await query.edit_message_text("Choose an event:", reply_markup=wax_kb())
 
-async def back_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.callback_query.answer()
-    await update.callback_query.edit_message_text("Main menu:", reply_markup=main_menu_kb())
+async def event_handler(update: Update, context: CallbackContext):
+    query = update.callback_query
+    await query.answer()
+    user_id = query.from_user.id
+    offset = await get_timezone(user_id)
 
-# --- Register Handlers ---
-telegram_app.add_handler(CommandHandler("start", start))
-telegram_app.add_handler(CallbackQueryHandler(timezone_button, pattern="^tz_"))
-telegram_app.add_handler(CallbackQueryHandler(wax_handler, pattern="^wax$"))
-telegram_app.add_handler(CallbackQueryHandler(back_handler, pattern="^back$"))
-telegram_app.add_handler(CallbackQueryHandler(event_handler, pattern="^(grandma|geyser|turtle)$"))
-telegram_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, manual_tz))
+    if query.data == "grandma":
+        time = next_event_time(5, offset, even_hour=True)
+        msg = format_event("Grandma", time)
+    elif query.data == "geyser":
+        time = next_event_time(35, offset, even_hour=False)
+        msg = format_event("Geyser", time)
+    elif query.data == "turtle":
+        time = next_event_time(20, offset, even_hour=True)
+        msg = format_event("Turtle", time)
+    elif query.data == "back":
+        await query.edit_message_text("Main Menu:", reply_markup=main_menu_kb())
+        return
+    else:
+        msg = "Unknown event."
 
-# --- FastAPI Telegram Webhook ---
-@app.post("/webhook")
+    await query.edit_message_text(msg, reply_markup=wax_kb())
+
+# --- FastAPI integration ---
+@app.on_event("startup")
+async def on_startup():
+    await init_db()
+    await bot_app.bot.set_webhook(f"{WEBHOOK_URL}{WEBHOOK_PATH}")
+
+@app.post(WEBHOOK_PATH)
 async def telegram_webhook(req: Request):
     data = await req.json()
-    update = Update.de_json(data, telegram_app.bot)
-    await telegram_app.process_update(update)
-    return {"ok": True}
+    update = Update.de_json(data, bot_app.bot)
+    await bot_app.process_update(update)
+    return "ok"
 
-@app.get("/")
-def root():
-    return {"status": "ok"}
+# --- Register Handlers ---
+bot_app.add_handler(CommandHandler("start", start))
+bot_app.add_handler(CallbackQueryHandler(timezone_handler, pattern=r"tz:"))
+bot_app.add_handler(CallbackQueryHandler(wax_handler, pattern="wax"))
+bot_app.add_handler(CallbackQueryHandler(event_handler, pattern="^(grandma|geyser|turtle|back)$"))
+bot_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, manual_timezone_input))
