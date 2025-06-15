@@ -1,6 +1,7 @@
 import os
 import asyncio
 import psycopg2
+import nest_asyncio
 from fastapi import FastAPI, Request
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
@@ -13,6 +14,7 @@ from datetime import datetime, timedelta
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 DATABASE_URL = os.getenv("DATABASE_URL")
 WEBHOOK_URL = os.getenv("WEBHOOK_URL")  # e.g. https://your-bot.onrender.com/webhook
+PORT = int(os.getenv("PORT", 10000))     # Default Render port
 
 # === DATABASE SETUP ===
 conn = psycopg2.connect(DATABASE_URL)
@@ -49,12 +51,11 @@ async def webhook(request: Request):
     await application.process_update(update)
     return {"ok": True}
 
-# === TELEGRAM BOT ===
+# === TELEGRAM APPLICATION ===
 application = Application.builder().token(BOT_TOKEN).build()
 
 # === HANDLERS ===
 
-# /start command - ask user to choose timezone or enter manually
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = [
         [InlineKeyboardButton("🇲🇲 Myanmar Time (+06:30)", callback_data='set_myanmar')],
@@ -65,50 +66,36 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
 
-# User clicks Myanmar timezone button
 async def set_myanmar_timezone(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.answer()
     user_id = update.effective_user.id
     set_tz_offset(user_id, "+06:30")
-    # Show main menu by editing current message
+    await update.callback_query.edit_message_text("✅ Timezone set to Myanmar Time (+06:30).")
     await show_main_menu(update, context)
 
-# User clicks Enter Manually button
 async def enter_manual_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.answer()
-    await update.callback_query.edit_message_text(
-        "Please type your timezone offset manually (e.g. `+06:30`)."
-    )
+    await update.callback_query.edit_message_text("Please type your timezone offset manually (e.g. `+06:30`).")
 
-# Handle user's manual timezone text message
 async def handle_timezone(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     offset = update.message.text.strip()
-    if not (offset.startswith("+") or offset.startswith("-")) or ":" not in offset:
-        await update.message.reply_text("Invalid format. Use format like `+06:30` or `-05:00`.")
+    if not offset.startswith(("+", "-")) or ":" not in offset:
+        await update.message.reply_text("❌ Invalid format. Use format like `+06:30` or `-05:00`.")
         return
     set_tz_offset(user_id, offset)
-    await update.message.reply_text(f"Timezone set to UTC{offset}")
+    await update.message.reply_text(f"✅ Timezone set to UTC{offset}")
     await show_main_menu(update, context)
 
-# Show main menu with Wax button
+# === MAIN MENU ===
 async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    keyboard = [
-        [InlineKeyboardButton("🕯️ Wax", callback_data='wax')],
-        [InlineKeyboardButton("✍️ Enter Manually", callback_data='enter_manual')]  # Add manual entry option here as well
-    ]
+    keyboard = [[InlineKeyboardButton("🕯️ Wax", callback_data='wax')]]
     if update.callback_query:
-        await update.callback_query.edit_message_text(
-            "Main Menu:",
-            reply_markup=InlineKeyboardMarkup(keyboard)
-        )
+        await update.callback_query.message.reply_text("Main Menu:", reply_markup=InlineKeyboardMarkup(keyboard))
     else:
-        await update.message.reply_text(
-            "Main Menu:",
-            reply_markup=InlineKeyboardMarkup(keyboard)
-        )
+        await update.message.reply_text("Main Menu:", reply_markup=InlineKeyboardMarkup(keyboard))
 
-# Wax submenu with events and back button
+# === WAX MENU ===
 async def show_wax_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = [
         [InlineKeyboardButton("👵 Grandma", callback_data='grandma')],
@@ -117,61 +104,52 @@ async def show_wax_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [InlineKeyboardButton("⬅️ Back", callback_data='back_to_main')]
     ]
     await update.callback_query.answer()
-    await update.callback_query.edit_message_text(
-        "Choose an event:",
-        reply_markup=InlineKeyboardMarkup(keyboard)
-    )
+    await update.callback_query.edit_message_text("Choose an event:", reply_markup=InlineKeyboardMarkup(keyboard))
 
-# Back to main menu from wax submenu
 async def back_to_main(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.answer()
     await show_main_menu(update, context)
 
-# Calculate next event time based on event and user timezone offset
+# === EVENT TIME HELPERS ===
 def get_next_event_time(event: str, user_offset: str):
     now = datetime.utcnow()
-    hours = now.hour
+    hour = now.hour
 
     if event == "grandma":
         minute = 5
-        next_hour = hours + 1 if hours % 2 == 1 else hours
+        next_hour = hour if hour % 2 == 0 else hour + 1
     elif event == "geyser":
         minute = 35
-        next_hour = hours + 1 if hours % 2 == 0 else hours
+        next_hour = hour if hour % 2 == 1 else hour + 1
     elif event == "turtle":
         minute = 20
-        next_hour = hours + 2 if hours % 2 == 1 else hours
+        next_hour = hour if hour % 2 == 0 else hour + 2
     else:
-        return "Unknown event"
+        return "❓ Unknown event"
 
-    next_time = now.replace(minute=minute, second=0, microsecond=0)
-    next_time = next_time.replace(hour=next_hour % 24)
-    if next_time < now:
+    next_time = now.replace(hour=next_hour % 24, minute=minute, second=0, microsecond=0)
+    if next_time <= now:
         next_time += timedelta(hours=2)
 
-    # Parse user offset and apply it
+    # Apply timezone offset
     sign = 1 if user_offset.startswith('+') else -1
     h, m = map(int, user_offset[1:].split(":"))
     offset_delta = timedelta(hours=sign * h, minutes=sign * m)
     local_time = next_time + offset_delta
+    remaining = int((next_time - now).total_seconds() // 60)
+    return local_time.strftime("%H:%M") + f" (in {remaining} mins)"
 
-    remaining = local_time - (now + offset_delta)
-    remaining_minutes = int(remaining.total_seconds() // 60)
-    return local_time.strftime("%H:%M") + f" (in {remaining_minutes} mins)"
-
-# Handle event selection buttons (grandma/geyser/turtle)
+# === EVENT CALLBACKS ===
 async def handle_event(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     tz_offset = get_tz_offset(user_id)
+    event = update.callback_query.data
 
-    event_map = {
+    event_names = {
         "grandma": "👵 Grandma",
         "geyser": "🌋 Geyser",
         "turtle": "🐢 Turtle"
     }
-    event = update.callback_query.data
-    if event not in event_map:
-        return
 
     time_str = get_next_event_time(event, tz_offset)
     keyboard = [
@@ -180,7 +158,7 @@ async def handle_event(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ]
     await update.callback_query.answer()
     await update.callback_query.edit_message_text(
-        f"{event_map[event]} next appears at: {time_str}",
+        f"{event_names[event]} next appears at: {time_str}",
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
 
@@ -194,20 +172,18 @@ application.add_handler(CallbackQueryHandler(show_wax_menu, pattern="^wax$"))
 application.add_handler(CallbackQueryHandler(back_to_main, pattern="^back_to_main$"))
 application.add_handler(CallbackQueryHandler(handle_event, pattern="^(grandma|geyser|turtle)$"))
 
-# === STARTUP ===
+# === RUN THE APP ===
+nest_asyncio.apply()
+
 async def main():
     await application.initialize()
     await application.start()
     await application.bot.set_webhook(WEBHOOK_URL)
-    print("Bot started with webhook set.")
+    print("✅ Bot started and webhook set.")
 
-import uvicorn
+    # Keep FastAPI server alive
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=PORT)
 
 if __name__ == "__main__":
-    import nest_asyncio
-    nest_asyncio.apply()
-    loop = asyncio.get_event_loop()
-    loop.create_task(main())
-    port = int(os.environ.get("PORT", 10000))
-    uvicorn.run("bot:app", host="0.0.0.0", port=port)
-
+    asyncio.run(main())
