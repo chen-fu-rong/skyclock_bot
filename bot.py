@@ -68,25 +68,31 @@ def get_local_time(offset_str):
     hours, minutes = map(int, offset_str[1:].split(':'))
     return datetime.utcnow() + timedelta(hours=sign*hours, minutes=sign*minutes)
 
-def get_next_event_time(base_minute):
-    now = datetime.utcnow()
-    next_time = now.replace(second=0, microsecond=0)
-    next_time += timedelta(minutes=1)  # ensure future
-    next_time = next_time.replace(minute=base_minute)
-    if next_time < now:
-        next_time += timedelta(hours=2)
+def get_next_event_time(now, base_minute):
+    hour = now.hour
+    minute = now.minute
+
+    if base_minute == 5:
+        # Grandma at even hours + 5 min
+        next_hour = hour if hour % 2 == 0 and minute < 5 else (hour + 1 if hour % 2 == 0 else hour + (2 - hour % 2))
+    elif base_minute == 20:
+        # Turtle at even hours + 20 min
+        next_hour = hour if hour % 2 == 0 and minute < 20 else (hour + 1 if hour % 2 == 0 else hour + (2 - hour % 2))
+    elif base_minute == 35:
+        # Geyser at odd hours + 35 min
+        next_hour = hour if hour % 2 == 1 and minute < 35 else (hour + 1 if hour % 2 == 1 else hour + (2 - (hour + 1) % 2))
     else:
-        hour_mod = next_time.hour % 2
-        if base_minute == 5 and hour_mod != 0:
-            next_time += timedelta(hours=1)
-        elif base_minute in [20, 35] and hour_mod != 1:
-            next_time += timedelta(hours=1)
-    return next_time
+        return now  # fallback
+
+    next_event = now.replace(hour=next_hour % 24, minute=base_minute, second=0, microsecond=0)
+    if next_event <= now:
+        next_event += timedelta(hours=2)
+    return next_event
 
 def format_event(name: str, event_time: datetime, now: datetime) -> str:
     time_left = str(event_time - now).split('.')[0]
     return (
-        f"Next {name} \u2728\n"
+        f"Next {name} ✨\n"
         f"{event_time.strftime('%I:%M %p')} ({time_left} left)"
     )
 
@@ -119,23 +125,22 @@ async def wax_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     now = get_local_time(offset)
 
     if query.data == 'wax_grandma':
-        event_time = get_next_event_time(5)
+        event_time = get_next_event_time(now, 5)
         label = "Grandma"
     elif query.data == 'wax_geyser':
-        event_time = get_next_event_time(35)
+        event_time = get_next_event_time(now, 35)
         label = "Geyser"
     elif query.data == 'wax_turtle':
-        event_time = get_next_event_time(20)
+        event_time = get_next_event_time(now, 20)
         label = "Turtle"
     else:
         await query.edit_message_text("Unknown event.")
         return
 
-    local_event_time = event_time + (now - datetime.utcnow())
-    text = format_event(label, local_event_time, now)
+    text = format_event(label, event_time, now)
     await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup([
-        [InlineKeyboardButton("\u23F0 Notify Me", callback_data=f'notify_{label.lower()}')],
-        [InlineKeyboardButton("\u2B05 Back", callback_data='wax_back')]
+        [InlineKeyboardButton("⏰ Notify Me", callback_data=f'notify_{label.lower()}')],
+        [InlineKeyboardButton("⬅ Back", callback_data='wax_back')]
     ]))
 
 async def wax_back(update: Update, context: ContextTypes.DEFAULT_TYPE):
