@@ -1,37 +1,38 @@
 import os
-import json
 import asyncio
 import logging
 from datetime import datetime, timedelta
 
-import pytz
 import psycopg2
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
-from telegram.ext import (Application, CallbackQueryHandler, CommandHandler,
-                          ContextTypes, MessageHandler, filters)
+from telegram.ext import (
+    Application, CallbackQueryHandler, CommandHandler,
+    ContextTypes, MessageHandler, filters
+)
 
-# Logging
+# Logging setup
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Telegram Bot Token
+# Load env vars
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-
-# Timezone offset fallback
-DEFAULT_TZ_OFFSET = "+06:30"
-
-# PostgreSQL connection (for Render)
 DB_URL = os.getenv("DATABASE_URL")
+WEBHOOK_URL = os.getenv("WEBHOOK_URL")
+PORT = int(os.getenv("PORT", 10000))
+
+# Default timezone
+DEFAULT_TZ_OFFSET = "+06:30"
 
 # FastAPI app
 app = FastAPI()
 
-# Init bot
+# Init Telegram application
 application = Application.builder().token(BOT_TOKEN).build()
 
-# Create table if not exists
+# ================= Database =================
+
 def init_db():
     with psycopg2.connect(DB_URL) as conn:
         with conn.cursor() as cur:
@@ -43,7 +44,6 @@ def init_db():
             """)
             conn.commit()
 
-# Get timezone offset for user
 def get_tz_offset(user_id):
     with psycopg2.connect(DB_URL) as conn:
         with conn.cursor() as cur:
@@ -51,7 +51,6 @@ def get_tz_offset(user_id):
             row = cur.fetchone()
             return row[0] if row else DEFAULT_TZ_OFFSET
 
-# Save timezone offset
 def set_tz_offset(user_id, offset):
     with psycopg2.connect(DB_URL) as conn:
         with conn.cursor() as cur:
@@ -62,24 +61,22 @@ def set_tz_offset(user_id, offset):
             """, (user_id, offset))
             conn.commit()
 
-# Time helpers
+# ================= Helpers =================
+
 def get_local_time(offset_str):
     sign = 1 if offset_str[0] == '+' else -1
     hours, minutes = map(int, offset_str[1:].split(':'))
-    return datetime.utcnow() + timedelta(hours=sign*hours, minutes=sign*minutes)
+    return datetime.utcnow() + timedelta(hours=sign * hours, minutes=sign * minutes)
 
 def get_next_event_time(now, base_minute):
     hour = now.hour
     minute = now.minute
 
-    if base_minute == 5:
-        # Grandma at even hours + 5 min
+    if base_minute == 5:  # Grandma
         next_hour = hour if hour % 2 == 0 and minute < 5 else (hour + 1 if hour % 2 == 0 else hour + (2 - hour % 2))
-    elif base_minute == 20:
-        # Turtle at even hours + 20 min
+    elif base_minute == 20:  # Turtle
         next_hour = hour if hour % 2 == 0 and minute < 20 else (hour + 1 if hour % 2 == 0 else hour + (2 - hour % 2))
-    elif base_minute == 35:
-        # Geyser at odd hours + 35 min
+    elif base_minute == 35:  # Geyser
         next_hour = hour if hour % 2 == 1 and minute < 35 else (hour + 1 if hour % 2 == 1 else hour + (2 - (hour + 1) % 2))
     else:
         return now  # fallback
@@ -91,12 +88,10 @@ def get_next_event_time(now, base_minute):
 
 def format_event(name: str, event_time: datetime, now: datetime) -> str:
     time_left = str(event_time - now).split('.')[0]
-    return (
-        f"Next {name} ✨\n"
-        f"{event_time.strftime('%I:%M %p')} ({time_left} left)"
-    )
+    return f"Next {name} ✨\n{event_time.strftime('%I:%M %p')} ({time_left} left)"
 
-# Command handlers
+# ================= Handlers =================
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Please send your timezone offset (e.g. +06:30 or -05:00)")
 
@@ -111,9 +106,9 @@ async def handle_timezone(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def wax(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = [
-        [InlineKeyboardButton("\U0001F475 Grandma", callback_data='wax_grandma')],
-        [InlineKeyboardButton("\U0001F4A8 Geyser", callback_data='wax_geyser')],
-        [InlineKeyboardButton("\U0001F422 Turtle", callback_data='wax_turtle')]
+        [InlineKeyboardButton("🧓 Grandma", callback_data='wax_grandma')],
+        [InlineKeyboardButton("💨 Geyser", callback_data='wax_geyser')],
+        [InlineKeyboardButton("🐢 Turtle", callback_data='wax_turtle')]
     ]
     await update.message.reply_text("Choose a Wax Event:", reply_markup=InlineKeyboardMarkup(keyboard))
 
@@ -144,9 +139,10 @@ async def wax_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ]))
 
 async def wax_back(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await wax(update, context)
+    await wax(update.callback_query, context)
 
-# FastAPI webhook endpoint
+# ================= Webhook =================
+
 @app.post("/webhook")
 async def webhook(request: Request):
     data = await request.json()
@@ -154,18 +150,18 @@ async def webhook(request: Request):
     await application.update_queue.put(update)
     return JSONResponse(content={"status": "ok"})
 
-# Register handlers
+# ================= Setup =================
+
 application.add_handler(CommandHandler("start", start))
 application.add_handler(CommandHandler("wax", wax))
 application.add_handler(CallbackQueryHandler(wax_button, pattern="^wax_"))
 application.add_handler(CallbackQueryHandler(wax_back, pattern="^wax_back"))
 application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_timezone))
 
-# Init DB and run
 if __name__ == "__main__":
     init_db()
     application.run_webhook(
         listen="0.0.0.0",
-        port=int(os.environ.get("PORT", 10000)),
-        webhook_url=os.environ.get("WEBHOOK_URL")
+        port=PORT,
+        webhook_url=WEBHOOK_URL
     )
