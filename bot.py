@@ -1,9 +1,8 @@
-# Add this to your import section
 import os
 import logging
+import asyncio
 from datetime import datetime, timedelta
 import pytz
-import asyncio
 import asyncpg
 
 from fastapi import FastAPI, Request
@@ -69,21 +68,21 @@ async def add_user(user_id, timezone):
 
 # --- Event times config ---
 EVENT_TIMES = {
-    "grandma": ["02:05 AM","04:05 AM", "06:05 AM", "08:05 AM", "10:05 AM", "12:05 PM",
-                "02:05 PM", "04:05 PM", "06:05 PM", "08:05 PM", "10:05 PM", "12:05 AM"],
-    "geyser": ["01:35 AM","03:35 AM","05:35 AM","07:35 AM","09:35 AM","11:35 AM",
-               "01:35 PM","03:35 PM","05:35 PM","07:35 PM","09:35 PM","11:35 PM"],
-    "turtle": ["02:20 AM","04:20 AM","06:20 AM","08:20 AM","10:20 AM","12:20 PM",
-               "02:20 PM","04:20 PM","06:20 PM","08:20 PM","10:20 PM","12:20 AM"]
+    "grandma": ["02:05", "04:05", "06:05", "08:05", "10:05", "12:05",
+                "14:05", "16:05", "18:05", "20:05", "22:05", "00:05"],
+    "geyser": ["01:35", "03:35", "05:35", "07:35", "09:35", "11:35",
+               "13:35", "15:35", "17:35", "19:35", "21:35", "23:35"],
+    "turtle": ["02:20", "04:20", "06:20", "08:20", "10:20", "12:20",
+               "14:20", "16:20", "18:20", "20:20", "22:20", "00:20"]
 }
 
 def next_event_info(event, tz_str):
     tz = pytz.timezone(tz_str)
     now = datetime.now(tz)
-    for t in EVENT_TIMES[event]:
-        dt = datetime.strptime(t, "%I:%M %p").replace(
-            year=now.year, month=now.month, day=now.day)
-        dt = tz.localize(dt)
+    today = now.date()
+    for time_str in EVENT_TIMES[event]:
+        hour, minute = map(int, time_str.split(":"))
+        dt = tz.localize(datetime.combine(today, datetime.min.time()).replace(hour=hour, minute=minute))
         if dt <= now:
             dt += timedelta(days=1)
         if dt > now:
@@ -100,6 +99,7 @@ def wax_kb():
         [InlineKeyboardButton("👵 Grandma", callback_data="wax_grandma")],
         [InlineKeyboardButton("🌋 Geyser", callback_data="wax_geyser")],
         [InlineKeyboardButton("🐢 Turtle", callback_data="wax_turtle")],
+        [InlineKeyboardButton("⬅️ Back", callback_data="back_main")],
     ])
 
 def event_times_kb(event):
@@ -107,54 +107,49 @@ def event_times_kb(event):
     buttons.append([InlineKeyboardButton("⬅️ Back", callback_data="wax")])
     return InlineKeyboardMarkup(buttons)
 
+def timezone_kb():
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("🇲🇲 Myanmar (+0630)", callback_data="tz_Asia/Yangon")]
+    ])
+
 # --- Handlers ---
 async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     user = await get_user(update.effective_user.id)
     if not user:
         await update.message.reply_text(
-            "⏰ Please set your timezone first with /tz.\n\n"
-            "Example:\n<code>/tz Asia/Yangon</code>\n\n"
-            "Or tap below to use Myanmar timezone.",
-            reply_markup=InlineKeyboardMarkup([[
-                InlineKeyboardButton("🇲🇲 Set to Myanmar", callback_data="set_myanmar")
-            ]]),
-            parse_mode=ParseMode.HTML
+            "🌍 Please set your timezone first.\n\nClick the button below to set to Myanmar Time, or send your timezone offset manually (e.g. +0630):",
+            reply_markup=timezone_kb()
         )
+        ctx.user_data["state"] = "waiting_timezone"
     else:
         await update.message.reply_text("Select Wax event:", reply_markup=main_menu_kb())
 
-async def tz_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    if not ctx.args:
-        user = await get_user(update.effective_user.id)
-        if user:
-            await update.message.reply_text(
-                f"🌍 Your current timezone is: <b>{user['timezone']}</b>\n\n"
-                "To change it, use:\n<code>/tz Asia/Bangkok</code>",
-                parse_mode=ParseMode.HTML
-            )
-        else:
-            await update.message.reply_text(
-                "❗ You haven’t set a timezone yet.\nExample:\n<code>/tz Asia/Yangon</code>",
-                parse_mode=ParseMode.HTML
-            )
+async def timezone_button_handler(update: Update, ctx):
+    q = update.callback_query
+    await q.answer()
+    tz = q.data.split("tz_")[1]
+    await add_user(q.from_user.id, tz)
+    await q.edit_message_text("✅ Timezone set to Myanmar (Asia/Yangon)")
+    await q.message.reply_text("Select Wax event:", reply_markup=main_menu_kb())
+
+async def manual_timezone_handler(update: Update, ctx):
+    if ctx.user_data.get("state") != "waiting_timezone":
         return
-
-    tz_input = ctx.args[0]
-    if tz_input not in pytz.all_timezones:
-        await update.message.reply_text(
-            f"❌ Invalid timezone: <code>{tz_input}</code>\n\n"
-            "Please choose a valid timezone from:\nhttps://en.wikipedia.org/wiki/List_of_tz_database_time_zones",
-            parse_mode=ParseMode.HTML
-        )
-        return
-
-    await add_user(update.effective_user.id, tz_input)
-    await update.message.reply_text(f"✅ Timezone set to <b>{tz_input}</b>!", parse_mode=ParseMode.HTML)
-
-async def set_myanmar_handler(update: Update, ctx):
-    await update.callback_query.answer()
-    await add_user(update.effective_user.id, "Asia/Yangon")
-    await update.callback_query.edit_message_text("✅ Timezone set to <b>Asia/Yangon</b>!", parse_mode=ParseMode.HTML)
+    input_text = update.message.text.strip()
+    try:
+        if not (input_text.startswith("+") or input_text.startswith("-")):
+            raise ValueError
+        hours = int(input_text[:3])
+        mins = int(input_text[0] + input_text[3:])
+        offset = timedelta(hours=hours, minutes=mins - hours * 60)
+        now = datetime.utcnow()
+        tz = pytz.FixedOffset(int(offset.total_seconds() // 60))
+        tzname = tz.zone or f"UTC{input_text}"
+        await add_user(update.effective_user.id, tzname)
+        await update.message.reply_text(f"✅ Timezone set to {tzname}\nSelect Wax event:", reply_markup=main_menu_kb())
+        ctx.user_data.clear()
+    except:
+        await update.message.reply_text("❌ Invalid format. Send timezone offset like +0630 or -0800.")
 
 async def wax_handler(update: Update, ctx):
     await update.callback_query.answer()
@@ -198,12 +193,13 @@ async def minutes_handler(update: Update, ctx):
         return
     event, time_str = ctx.user_data["event"], ctx.user_data["time"]
     user = await get_user(update.effective_user.id)
-    dt, _ = next_event_info(event, user["timezone"])
     tz = pytz.timezone(user["timezone"])
-    target = tz.localize(datetime.strptime(time_str, "%I:%M %p").replace(
-        year=dt.year, month=dt.month, day=dt.day
-    ))
-    job_time = target - timedelta(minutes=mins)
+    now = datetime.now(tz)
+    hour, minute = map(int, time_str.split(":"))
+    dt = tz.localize(datetime.combine(now.date(), datetime.min.time()).replace(hour=hour, minute=minute))
+    if dt <= now:
+        dt += timedelta(days=1)
+    job_time = dt - timedelta(minutes=mins)
     job_id = f"{update.effective_user.id}_{event}_{time_str}"
     def send_reminder():
         asyncio.create_task(
@@ -212,19 +208,21 @@ async def minutes_handler(update: Update, ctx):
         )
     scheduler.add_job(send_reminder, 'date', run_date=job_time, id=job_id)
     async with db_pool.acquire() as c:
-        await c.execute("""INSERT INTO reminders(user_id, event, event_time, minutes_before, timezone, job_id)
-                           VALUES($1,$2,$3,$4,$5,$6) ON CONFLICT DO NOTHING""",
-            update.effective_user.id, event, time_str, mins, user["timezone"], job_id)
+        await c.execute("""
+            INSERT INTO reminders(user_id, event, event_time, minutes_before, timezone, job_id)
+            VALUES($1,$2,$3,$4,$5,$6) ON CONFLICT DO NOTHING
+        """, update.effective_user.id, event, time_str, mins, user["timezone"], job_id)
     await update.message.reply_text(f"✅ Reminder set {mins}m before {time_str}")
     ctx.user_data.clear()
 
 # --- Register Handlers ---
 telegram_app.add_handler(CommandHandler("start", start))
-telegram_app.add_handler(CommandHandler("tz", tz_command))
-telegram_app.add_handler(CallbackQueryHandler(set_myanmar_handler, pattern="^set_myanmar$"))
+telegram_app.add_handler(CallbackQueryHandler(timezone_button_handler, pattern="^tz_"))
 telegram_app.add_handler(CallbackQueryHandler(wax_handler, pattern="^wax$"))
 telegram_app.add_handler(CallbackQueryHandler(wax_event_handler, pattern="^wax_"))
 telegram_app.add_handler(CallbackQueryHandler(choose_time_handler, pattern="^choose_"))
+telegram_app.add_handler(CallbackQueryHandler(wax_handler, pattern="^back_main$"))
+telegram_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, manual_timezone_handler))
 telegram_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, minutes_handler))
 
 # --- FastAPI startup/shutdown ---
