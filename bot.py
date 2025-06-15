@@ -201,4 +201,13 @@ async def main():
     await application.bot.set_webhook(WEBHOOK_URL)
     print("Bot started with webhook set.")
 
-asyncio.run(main())
+import uvicorn
+
+if __name__ == "__main__":
+    import nest_asyncio
+    nest_asyncio.apply()
+    loop = asyncio.get_event_loop()
+    loop.create_task(main())
+    port = int(os.environ.get("PORT", 10000))
+    uvicorn.run("bot:app", host="0.0.0.0", port=port)
+
