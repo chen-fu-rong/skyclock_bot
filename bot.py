@@ -1,7 +1,6 @@
 import os
 import asyncio
 import psycopg2
-import nest_asyncio
 from fastapi import FastAPI, Request
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
@@ -13,10 +12,9 @@ from datetime import datetime, timedelta
 # === CONFIGURATION ===
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 DATABASE_URL = os.getenv("DATABASE_URL")
-WEBHOOK_URL = os.getenv("WEBHOOK_URL")  # e.g. https://your-bot.onrender.com/webhook
-PORT = int(os.getenv("PORT", 10000))     # Default Render port
+WEBHOOK_URL = os.getenv("WEBHOOK_URL")  # https://skyclock-bot.onrender.com/webhook
 
-# === DATABASE SETUP ===
+# === DATABASE ===
 conn = psycopg2.connect(DATABASE_URL)
 cur = conn.cursor()
 cur.execute("""
@@ -51,11 +49,10 @@ async def webhook(request: Request):
     await application.process_update(update)
     return {"ok": True}
 
-# === TELEGRAM APPLICATION ===
+# === TELEGRAM BOT ===
 application = Application.builder().token(BOT_TOKEN).build()
 
-# === HANDLERS ===
-
+# === COMMAND HANDLERS ===
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = [
         [InlineKeyboardButton("🇲🇲 Myanmar Time (+06:30)", callback_data='set_myanmar')],
@@ -75,7 +72,7 @@ async def set_myanmar_timezone(update: Update, context: ContextTypes.DEFAULT_TYP
 
 async def enter_manual_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.answer()
-    await update.callback_query.edit_message_text("Please type your timezone offset manually (e.g. `+06:30`).")
+    await update.callback_query.edit_message_text("📥 Please type your timezone offset manually (e.g. `+06:30`).")
 
 async def handle_timezone(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -117,27 +114,26 @@ def get_next_event_time(event: str, user_offset: str):
 
     if event == "grandma":
         minute = 5
-        next_hour = hour if hour % 2 == 0 else hour + 1
+        next_hour = hour + (1 if hour % 2 == 1 else 0)
     elif event == "geyser":
         minute = 35
-        next_hour = hour if hour % 2 == 1 else hour + 1
+        next_hour = hour + (1 if hour % 2 == 0 else 0)
     elif event == "turtle":
         minute = 20
-        next_hour = hour if hour % 2 == 0 else hour + 2
+        next_hour = hour + (2 if hour % 2 == 1 else 0)
     else:
-        return "❓ Unknown event"
+        return "Unknown event"
 
     next_time = now.replace(hour=next_hour % 24, minute=minute, second=0, microsecond=0)
     if next_time <= now:
         next_time += timedelta(hours=2)
 
-    # Apply timezone offset
     sign = 1 if user_offset.startswith('+') else -1
     h, m = map(int, user_offset[1:].split(":"))
     offset_delta = timedelta(hours=sign * h, minutes=sign * m)
     local_time = next_time + offset_delta
     remaining = int((next_time - now).total_seconds() // 60)
-    return local_time.strftime("%H:%M") + f" (in {remaining} mins)"
+    return f"{local_time.strftime('%H:%M')} (in {remaining} mins)"
 
 # === EVENT CALLBACKS ===
 async def handle_event(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -145,11 +141,14 @@ async def handle_event(update: Update, context: ContextTypes.DEFAULT_TYPE):
     tz_offset = get_tz_offset(user_id)
     event = update.callback_query.data
 
-    event_names = {
+    event_map = {
         "grandma": "👵 Grandma",
         "geyser": "🌋 Geyser",
         "turtle": "🐢 Turtle"
     }
+
+    if event not in event_map:
+        return
 
     time_str = get_next_event_time(event, tz_offset)
     keyboard = [
@@ -158,11 +157,15 @@ async def handle_event(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ]
     await update.callback_query.answer()
     await update.callback_query.edit_message_text(
-        f"{event_names[event]} next appears at: {time_str}",
+        f"{event_map[event]} next appears at: {time_str}",
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
 
-# === REGISTER HANDLERS ===
+# === PLACEHOLDER NOTIFY CALLBACK ===
+async def handle_notify_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.callback_query.answer("Notification feature coming soon!")
+
+# === HANDLERS ===
 application.add_handler(CommandHandler("start", start))
 application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_timezone))
 
@@ -171,19 +174,18 @@ application.add_handler(CallbackQueryHandler(enter_manual_callback, pattern="^en
 application.add_handler(CallbackQueryHandler(show_wax_menu, pattern="^wax$"))
 application.add_handler(CallbackQueryHandler(back_to_main, pattern="^back_to_main$"))
 application.add_handler(CallbackQueryHandler(handle_event, pattern="^(grandma|geyser|turtle)$"))
+application.add_handler(CallbackQueryHandler(handle_notify_callback, pattern="^notify_.*$"))
 
-# === RUN THE APP ===
-nest_asyncio.apply()
-
+# === STARTUP ===
 async def main():
     await application.initialize()
     await application.start()
     await application.bot.set_webhook(WEBHOOK_URL)
-    print("✅ Bot started and webhook set.")
-
-    # Keep FastAPI server alive
-    import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=PORT)
+    print("✅ Bot started with webhook set.")
 
 if __name__ == "__main__":
+    import nest_asyncio
+    import uvicorn
+    nest_asyncio.apply()
     asyncio.run(main())
+    uvicorn.run(app, host="0.0.0.0", port=10000)
