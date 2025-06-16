@@ -28,6 +28,14 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# === CONSTANTS ===
+MYANMAR_OFFSET = timedelta(hours=6, minutes=30)  # UTC+6:30
+EVENT_TIMES = {
+    "grandma": {"minute": 5, "hour_parity": "even"},
+    "geyser": {"minute": 35, "hour_parity": "odd"},
+    "turtle": {"minute": 20, "hour_parity": "even"}
+}
+
 # === DATABASE POOL SETUP ===
 pool = AsyncConnectionPool(
     conninfo=DATABASE_URL,
@@ -77,7 +85,7 @@ async def lifespan(app: FastAPI):
     # Start job queue for local development
     if not IS_RENDER and application.job_queue:
         application.job_queue.run_repeating(
-            lambda ctx: asyncio.create_task(check_scheduled_events(ctx)),
+            check_scheduled_events,
             interval=60,
             first=10
         )
@@ -127,35 +135,47 @@ async def set_notification(user_id: int, event: str):
                 ON CONFLICT (user_id, event) DO NOTHING;
             """, (user_id, event))
 
-# === EVENT TIME CALCULATION FUNCTIONS ===
+# === SKY TIME UTILITIES ===
+def get_sky_time() -> datetime:
+    """Get current Sky time (UTC)"""
+    return datetime.utcnow().replace(tzinfo=timezone.utc)
+
+def to_myanmar_time(utc_time: datetime) -> datetime:
+    """Convert UTC time to Myanmar time (UTC+6:30)"""
+    return utc_time + MYANMAR_OFFSET
+
+def format_12h(dt: datetime) -> str:
+    """Format datetime to 12-hour without leading zero"""
+    return dt.strftime("%I:%M %p").lstrip("0")
+
 def next_occurrence(base: datetime, minute: int, hour_parity: str) -> datetime:
+    """Calculate next occurrence with parity constraint"""
     candidate = base.replace(minute=minute, second=0, microsecond=0)
     if candidate <= base:
         candidate += timedelta(hours=1)
+    
+    # Adjust for parity
     while (hour_parity == "even" and candidate.hour % 2 != 0) or \
           (hour_parity == "odd" and candidate.hour % 2 == 0):
         candidate += timedelta(hours=1)
+    
     return candidate
 
-async def get_next_event_time(event: str, user_offset: str) -> str:
-    now = datetime.now(timezone.utc).replace(tzinfo=None)
-    if event == "grandma":
-        next_time = next_occurrence(now, 5, "even")
-    elif event == "geyser":
-        next_time = next_occurrence(now, 35, "odd")
-    elif event == "turtle":
-        next_time = next_occurrence(now, 20, "even")
-    else:
-        return "Unknown event"
-
-    sign = 1 if user_offset.startswith('+') else -1
-    h, m = map(int, user_offset[1:].split(":"))
-    offset_delta = timedelta(hours=sign * h, minutes=sign * m)
-    local_time = next_time + offset_delta
-
-    formatted_local_time = local_time.strftime("%I:%M %p").lstrip("0")
-    remaining = int((next_time - now).total_seconds() // 60)
-    return f"{formatted_local_time} (in {remaining} mins)"
+def get_next_event_time(event: str) -> tuple:
+    """Returns (utc_time, myanmar_time, remaining_minutes)"""
+    now_utc = get_sky_time()
+    config = EVENT_TIMES[event]
+    
+    # Calculate next occurrence in UTC
+    next_utc = next_occurrence(now_utc, config["minute"], config["hour_parity"])
+    
+    # Convert to Myanmar time
+    next_myanmar = to_myanmar_time(next_utc)
+    
+    # Calculate remaining minutes
+    remaining_minutes = int((next_utc - now_utc).total_seconds() // 60)
+    
+    return next_utc, next_myanmar, remaining_minutes
 
 # === BOT COMMANDS AND CALLBACKS ===
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -190,11 +210,33 @@ async def handle_timezone(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await show_main_menu(update, context)
 
 async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    keyboard = [[InlineKeyboardButton("🕯️ Wax", callback_data='wax')]]
+    keyboard = [
+        [InlineKeyboardButton("🕰️ Sky Clock", callback_data='sky_clock')],
+        [InlineKeyboardButton("🕯️ Wax Events", callback_data='wax')]
+    ]
     if update.callback_query:
         await update.callback_query.message.reply_text("Main Menu:", reply_markup=InlineKeyboardMarkup(keyboard))
     else:
         await update.message.reply_text("Main Menu:", reply_markup=InlineKeyboardMarkup(keyboard))
+
+async def show_sky_clock(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    sky_time = get_sky_time()
+    myanmar_time = to_myanmar_time(sky_time)
+    
+    message = (
+        "⏰ <b>Current Sky Time</b>\n"
+        f"🌐 <b>UTC:</b> {sky_time.strftime('%H:%M')}\n"
+        f"🇲🇲 <b>Myanmar:</b> {format_12h(myanmar_time)}\n\n"
+        "Sky Time is based on UTC. All events follow this clock."
+    )
+    
+    keyboard = [[InlineKeyboardButton("⬅️ Back", callback_data='back_to_main')]]
+    await update.callback_query.answer()
+    await update.callback_query.edit_message_text(
+        message,
+        reply_markup=InlineKeyboardMarkup(keyboard),
+        parse_mode="HTML"
+    )
 
 async def show_wax_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = [
@@ -204,30 +246,41 @@ async def show_wax_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [InlineKeyboardButton("⬅️ Back", callback_data='back_to_main')]
     ]
     await update.callback_query.answer()
-    await update.callback_query.edit_message_text("Choose an event:", reply_markup=InlineKeyboardMarkup(keyboard))
+    await update.callback_query.edit_message_text("Choose a wax event:", reply_markup=InlineKeyboardMarkup(keyboard))
 
 async def back_to_main(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.answer()
     await show_main_menu(update, context)
 
 async def handle_event(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    tz_offset = await get_tz_offset(user_id)
     event = update.callback_query.data
-    event_map = {
+    event_names = {
         "grandma": "Grandma 👵",
         "geyser": "Geyser 🌋",
         "turtle": "Turtle 🐢"
     }
-    time_str = await get_next_event_time(event, tz_offset)
+    
+    # Get event times in UTC and Myanmar time
+    _, next_myanmar, remaining_minutes = get_next_event_time(event)
+    
+    # Format the message
+    message = (
+        f"<b>{event_names[event]}</b>\n"
+        f"🕒 <b>Myanmar Time:</b> {format_12h(next_myanmar)}\n"
+        f"⏱️ <b>Starts in:</b> {remaining_minutes} minutes\n\n"
+        "Click 🔔 to get notified 5 minutes before the event!"
+    )
+    
     keyboard = [
         [InlineKeyboardButton("🔔 Notify Me", callback_data=f'notify_{event}')],
         [InlineKeyboardButton("⬅️ Back", callback_data='wax')]
     ]
+    
     await update.callback_query.answer()
     await update.callback_query.edit_message_text(
-        f"{event_map[event]} next appears at: {time_str}",
-        reply_markup=InlineKeyboardMarkup(keyboard)
+        message,
+        reply_markup=InlineKeyboardMarkup(keyboard),
+        parse_mode="HTML"
     )
 
 async def handle_notify_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -239,20 +292,35 @@ async def handle_notify_callback(update: Update, context: ContextTypes.DEFAULT_T
 # === SCHEDULED EVENT CHECKING ===
 async def check_scheduled_events(context: ContextTypes.DEFAULT_TYPE):
     logger.info("⏳ Checking scheduled events...")
+    now_utc = get_sky_time()
+    notify_before = timedelta(minutes=5)
+
     async with pool.connection() as conn:
         async with conn.cursor() as cur:
             await cur.execute("SELECT user_id, event FROM notifications;")
             notifications = await cur.fetchall()
+            
             for user_id, event in notifications:
-                tz_offset = await get_tz_offset(user_id)
-                event_time = await get_next_event_time(event, tz_offset)
-                try:
-                    await context.bot.send_message(
-                        chat_id=user_id,
-                        text=f"⏰ Reminder: {event.capitalize()} starts soon! ({event_time})"
-                    )
-                except Exception as e:
-                    logger.error(f"❌ Notification failed for {user_id}: {e}")
+                next_utc, next_myanmar, _ = get_next_event_time(event)
+                
+                # Check if it's time to notify (5 minutes before event)
+                if next_utc - notify_before <= now_utc < next_utc:
+                    try:
+                        # Calculate remaining minutes
+                        remaining = int((next_utc - now_utc).total_seconds() // 60)
+                        
+                        await context.bot.send_message(
+                            chat_id=user_id,
+                            text=(
+                                f"⏰ <b>Reminder: {event.capitalize()} starts soon!</b>\n"
+                                f"🕒 <b>Myanmar Time:</b> {format_12h(next_myanmar)}\n"
+                                f"⏱️ <b>Starting in:</b> {remaining} minutes"
+                            ),
+                            parse_mode="HTML"
+                        )
+                        logger.info(f"✅ Notification sent to {user_id} for {event}")
+                    except Exception as e:
+                        logger.error(f"❌ Notification failed for {user_id}: {e}")
 
 # === FASTAPI ROUTES ===
 @app.get("/")
@@ -282,6 +350,7 @@ application.add_handler(CommandHandler("start", start))
 application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_timezone))
 application.add_handler(CallbackQueryHandler(set_myanmar_timezone, pattern="^set_myanmar$"))
 application.add_handler(CallbackQueryHandler(enter_manual_callback, pattern="^enter_manual$"))
+application.add_handler(CallbackQueryHandler(show_sky_clock, pattern="^sky_clock$"))
 application.add_handler(CallbackQueryHandler(show_wax_menu, pattern="^wax$"))
 application.add_handler(CallbackQueryHandler(back_to_main, pattern="^back_to_main$"))
 application.add_handler(CallbackQueryHandler(handle_event, pattern="^(grandma|geyser|turtle)$"))
