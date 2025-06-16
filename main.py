@@ -13,7 +13,6 @@ from telegram.ext import (
 )
 from worker import init_db, get_user, update_user, get_myanmar_time
 
-
 # Load environment variables
 load_dotenv()
 
@@ -138,8 +137,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ])
     )
 
-async def on_startup(application):
-    await application.bot.set_webhook(
+async def set_webhook(app: Application):
+    await app.bot.set_webhook(
         f"{WEBHOOK_URL}/webhook",
         allowed_updates=["message", "callback_query"]
     )
@@ -157,9 +156,11 @@ def main():
     application.run_webhook(
         listen="0.0.0.0",
         port=PORT,
-        webhook_url=f"{WEBHOOK_URL}/webhook",
-        on_startup=on_startup
+        webhook_url=f"{WEBHOOK_URL}/webhook"
     )
+    
+    # Set webhook after startup
+    application.post_init = set_webhook
 
 if __name__ == "__main__":
     main()
