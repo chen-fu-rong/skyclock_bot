@@ -48,6 +48,12 @@ pool = AsyncConnectionPool(
 # Create application instance
 application = Application.builder().token(BOT_TOKEN).build()
 
+# === CALLBACK DEBUGGER ===
+async def callback_debug(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    logger.info(f"🔔 Received callback: {query.data}")
+    await query.answer(f"Callback: {query.data}")
+
 # === FASTAPI LIFESPAN CONTEXT ===
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -349,9 +355,15 @@ async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         keyboard.append([InlineKeyboardButton("👑 Admin Panel", callback_data='admin_menu')])
     
     if update.callback_query:
-        await update.callback_query.message.reply_text("Main Menu:", reply_markup=InlineKeyboardMarkup(keyboard))
+        await update.callback_query.edit_message_text(
+            "Main Menu:",
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
     else:
-        await update.message.reply_text("Main Menu:", reply_markup=InlineKeyboardMarkup(keyboard))
+        await update.message.reply_text(
+            "Main Menu:",
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
 
 async def show_sky_clock(update: Update, context: ContextTypes.DEFAULT_TYPE):
     sky_time = get_sky_time()
@@ -380,7 +392,10 @@ async def show_wax_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [InlineKeyboardButton("⬅️ Back", callback_data='back_to_main')]
     ]
     await update.callback_query.answer()
-    await update.callback_query.edit_message_text("Choose a wax event:", reply_markup=InlineKeyboardMarkup(keyboard))
+    await update.callback_query.edit_message_text(
+        "Choose a wax event:",
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
 
 async def back_to_main(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.answer()
@@ -473,13 +488,20 @@ async def health_check():
 async def webhook(request: Request):
     data = await request.json()
     try:
+        logger.info(f"📩 Received webhook update")
         update = Update.de_json(data, application.bot)
+        logger.info(f"🔄 Processing update ID: {update.update_id}")
         await application.process_update(update)
+        logger.info(f"✅ Processed update ID: {update.update_id}")
     except Exception as e:
-        logger.error(f"❌ Failed to process update: {e}")
+        logger.error(f"❌ Failed to process update: {e}", exc_info=True)
     return {"ok": True}
 
 # === ADD HANDLERS ===
+# Debug handler should be first
+application.add_handler(CallbackQueryHandler(callback_debug))
+
+# Then add all other handlers
 application.add_handler(CommandHandler("start", start))
 application.add_handler(CommandHandler("admin", handle_admin_command))
 application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_timezone))
