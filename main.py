@@ -6,8 +6,7 @@ from datetime import datetime, timedelta, timezone
 from contextlib import asynccontextmanager
 
 import pytz
-import uvicorn
-from fastapi import FastAPI, Request, HTTPException
+from fastapi import FastAPI, Request
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application, CommandHandler, CallbackQueryHandler,
@@ -37,6 +36,9 @@ pool = AsyncConnectionPool(
     open=False
 )
 
+# Create application instance
+application = Application.builder().token(BOT_TOKEN).build()
+
 # === FASTAPI LIFESPAN CONTEXT ===
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -60,9 +62,38 @@ async def lifespan(app: FastAPI):
                 CREATE INDEX IF NOT EXISTS idx_user_id ON users(user_id);
             """)
     logger.info("✅ Database initialized")
+    
+    # Initialize and start bot application
+    await application.initialize()
+    await application.start()
+    
+    # Set webhook for production
+    if IS_RENDER and WEBHOOK_URL:
+        await application.bot.set_webhook(WEBHOOK_URL)
+        logger.info(f"✅ Webhook set to {WEBHOOK_URL}")
+    else:
+        logger.info("🚫 Webhook not set (running in development mode)")
+    
+    # Start job queue for local development
+    if not IS_RENDER and application.job_queue:
+        application.job_queue.run_repeating(
+            lambda ctx: asyncio.create_task(check_scheduled_events(ctx)),
+            interval=60,
+            first=10
+        )
+        logger.info("⏰ Started local job scheduler")
+    
     yield
+    
     # Shutdown
+    logger.info("🛑 Shutting down application...")
+    if IS_RENDER and WEBHOOK_URL:
+        await application.bot.delete_webhook()
+        logger.info("✅ Webhook deleted")
+    await application.stop()
+    await application.shutdown()
     await pool.close()
+    logger.info("✅ Application shut down")
 
 app = FastAPI(lifespan=lifespan)
 
@@ -126,9 +157,6 @@ async def get_next_event_time(event: str, user_offset: str) -> str:
     remaining = int((next_time - now).total_seconds() // 60)
     return f"{formatted_local_time} (in {remaining} mins)"
 
-# === TELEGRAM BOT INITIALIZATION ===
-application = Application.builder().token(BOT_TOKEN).build()
-
 # === BOT COMMANDS AND CALLBACKS ===
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = [
@@ -170,9 +198,9 @@ async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def show_wax_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = [
-        [InlineKeyboardButton("👵 Grandma", callback_data='grandma')],
-        [InlineKeyboardButton("🌋 Geyser", callback_data='geyser')],
-        [InlineKeyboardButton("🐢 Turtle", callback_data='turtle')],
+        [InlineKeyboardButton("Grandma 👵", callback_data='grandma')],
+        [InlineKeyboardButton("Geyser 🌋", callback_data='geyser')],
+        [InlineKeyboardButton("Turtle 🐢", callback_data='turtle')],
         [InlineKeyboardButton("⬅️ Back", callback_data='back_to_main')]
     ]
     await update.callback_query.answer()
@@ -187,9 +215,9 @@ async def handle_event(update: Update, context: ContextTypes.DEFAULT_TYPE):
     tz_offset = await get_tz_offset(user_id)
     event = update.callback_query.data
     event_map = {
-        "grandma": "👵 Grandma",
-        "geyser": "🌋 Geyser",
-        "turtle": "🐢 Turtle"
+        "grandma": "Grandma 👵",
+        "geyser": "Geyser 🌋",
+        "turtle": "Turtle 🐢"
     }
     time_str = await get_next_event_time(event, tz_offset)
     keyboard = [
@@ -209,8 +237,8 @@ async def handle_notify_callback(update: Update, context: ContextTypes.DEFAULT_T
     await update.callback_query.answer("🔔 You'll get notified 5 minutes before the event!")
 
 # === SCHEDULED EVENT CHECKING ===
-async def check_scheduled_events(application: Application):
-    logger.info("Checking scheduled events...")
+async def check_scheduled_events(context: ContextTypes.DEFAULT_TYPE):
+    logger.info("⏳ Checking scheduled events...")
     async with pool.connection() as conn:
         async with conn.cursor() as cur:
             await cur.execute("SELECT user_id, event FROM notifications;")
@@ -219,12 +247,12 @@ async def check_scheduled_events(application: Application):
                 tz_offset = await get_tz_offset(user_id)
                 event_time = await get_next_event_time(event, tz_offset)
                 try:
-                    await application.bot.send_message(
+                    await context.bot.send_message(
                         chat_id=user_id,
                         text=f"⏰ Reminder: {event.capitalize()} starts soon! ({event_time})"
                     )
                 except Exception as e:
-                    logger.error(f"Notification failed for {user_id}: {e}")
+                    logger.error(f"❌ Notification failed for {user_id}: {e}")
 
 # === FASTAPI ROUTES ===
 @app.get("/")
@@ -246,7 +274,7 @@ async def webhook(request: Request):
         update = Update.de_json(data, application.bot)
         await application.process_update(update)
     except Exception as e:
-        logger.error(f"Failed to process update: {e}")
+        logger.error(f"❌ Failed to process update: {e}")
     return {"ok": True}
 
 # === ADD HANDLERS ===
@@ -259,26 +287,7 @@ application.add_handler(CallbackQueryHandler(back_to_main, pattern="^back_to_mai
 application.add_handler(CallbackQueryHandler(handle_event, pattern="^(grandma|geyser|turtle)$"))
 application.add_handler(CallbackQueryHandler(handle_notify_callback, pattern="^notify_.*$"))
 
-# === RUN SCHEDULED JOB IN LOCAL MODE ===
-if not IS_RENDER:
-    job_queue = application.job_queue
-    job_queue.run_repeating(lambda ctx: asyncio.create_task(check_scheduled_events(application)), interval=60, first=10)
-
-# === ON STARTUP HOOK ===
-@app.on_event("startup")
-async def startup_event():
-    logger.info("Starting up and setting webhook...")
-    if IS_RENDER and WEBHOOK_URL:
-        await application.bot.set_webhook(WEBHOOK_URL)
-        logger.info(f"Webhook set to {WEBHOOK_URL}")
-
-# === ON SHUTDOWN HOOK ===
-@app.on_event("shutdown")
-async def shutdown_event():
-    logger.info("Shutting down, closing database pool...")
-    await pool.close()
-
 # === MAIN ENTRY POINT ===
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("main:app", host="0.0.0.0", port=PORT, log_level="info")
+    uvicorn.run(app, host="0.0.0.0", port=PORT, log_level="info")

@@ -1,6 +1,6 @@
 fastapi==0.109.0
 uvicorn==0.27.0
 python-telegram-bot==20.6
-psycopg[pool,binary]==3.2.6  # Correct package specification
+psycopg[pool,binary]==3.2.6
 pytz==2023.3.post1
 python-dotenv==1.0.0

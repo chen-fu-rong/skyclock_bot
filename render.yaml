@@ -3,15 +3,34 @@ services:
     name: skyclock-bot
     runtime: python
     buildCommand: pip install -r requirements.txt
-    startCommand: python main.py  # Updated command
+    startCommand: python main.py
     envVars:
       - key: BOT_TOKEN
-        value: YOUR_BOT_TOKEN
+        value: 7803378940:AAFER2kRMgwwkADWp70xYWcK8KLUnJRzwb8
       - key: DATABASE_URL
         fromDatabase:
           name: skyclock-db
           property: connectionString
       - key: WEBHOOK_URL
-        value: https://skyclock-bot.onrender.com
+        value: https://skyclock-bot.onrender.com/webhook
       - key: RENDER
         value: true
+
+  - type: worker
+    name: skyclock-worker
+    runtime: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: python worker.py
+    envVars:
+      - key: BOT_TOKEN
+        value: 7803378940:AAFER2kRMgwwkADWp70xYWcK8KLUnJRzwb8
+      - key: DATABASE_URL
+        fromDatabase:
+          name: skyclock-db
+          property: connectionString
+      - key: RENDER
+        value: true
+
+databases:
+  - name: skyclock-db
+    plan: free
