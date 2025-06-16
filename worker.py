@@ -1,28 +1,36 @@
 import os
 import logging
-import psycopg2
-from psycopg2 import sql
 from contextlib import contextmanager
 from datetime import datetime, timedelta
-import pytz
 
 # Configure logging
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
-@contextmanager
 def get_db_connection():
-    conn = None
-    try:
-        conn = psycopg2.connect(os.getenv('DATABASE_URL'), sslmode='require')
-        yield conn
-    except Exception as e:
-        logger.error(f"Database connection error: {str(e)}")
-        raise
-    finally:
-        if conn:
-            conn.close()
+    """Connect to PostgreSQL on Render or use SQLite locally"""
+    if 'RENDER' in os.environ:
+        try:
+            import psycopg2
+            conn = psycopg2.connect(os.getenv('DATABASE_URL'), sslmode='require')
+            logger.info("Connected to PostgreSQL on Render")
+            return conn
+        except ImportError:
+            logger.warning("psycopg2 not found, trying pg8000")
+            try:
+                import pg8000
+                conn = pg8000.connect(os.getenv('DATABASE_URL'))
+                logger.info("Connected using pg8000")
+                return conn
+            except Exception as e:
+                logger.error(f"PostgreSQL connection failed: {str(e)}")
+                raise
+    else:
+        import sqlite3
+        conn = sqlite3.connect('skyclock.db')
+        logger.info("Connected to SQLite for local development")
+        return conn
 
 @contextmanager
 def get_db_cursor():
@@ -40,13 +48,22 @@ def get_db_cursor():
 def init_db():
     try:
         with get_db_cursor() as cursor:
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS users (
-                    user_id BIGINT PRIMARY KEY,
-                    username TEXT,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                )
-            """)
+            if 'RENDER' in os.environ:
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS users (
+                        user_id BIGINT PRIMARY KEY,
+                        username TEXT,
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    )
+                """)
+            else:
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS users (
+                        user_id INTEGER PRIMARY KEY,
+                        username TEXT,
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    )
+                """)
         logger.info("✅ Database initialized")
     except Exception as e:
         logger.error(f"Database initialization error: {str(e)}")
@@ -77,5 +94,3 @@ def get_myanmar_time():
     """Get current Myanmar time (UTC+6:30)"""
     utc_time = datetime.utcnow()
     return utc_time + timedelta(hours=6, minutes=30)
-    # Alternative using pytz:
-    # return datetime.now(pytz.timezone('Asia/Yangon'))
