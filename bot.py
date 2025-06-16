@@ -14,7 +14,7 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 DATABASE_URL = os.getenv("DATABASE_URL")
 WEBHOOK_URL = os.getenv("WEBHOOK_URL")  # https://skyclock-bot.onrender.com/webhook
 
-# === DATABASE ===
+# === DO NOT MODIFY BELOW: DATABASE CONNECTION SETUP ===
 conn = psycopg2.connect(DATABASE_URL)
 cur = conn.cursor()
 cur.execute("""
@@ -25,6 +25,7 @@ cur.execute("""
 """)
 conn.commit()
 
+
 def set_tz_offset(user_id, offset):
     cur.execute("""
         INSERT INTO users (user_id, tz_offset)
@@ -34,12 +35,14 @@ def set_tz_offset(user_id, offset):
     """, (user_id, offset))
     conn.commit()
 
+
 def get_tz_offset(user_id):
     cur.execute("SELECT tz_offset FROM users WHERE user_id = %s;", (user_id,))
     row = cur.fetchone()
     return row[0] if row else "+00:00"
+# === DO NOT MODIFY ABOVE ===
 
-# === FASTAPI APP ===
+# === DO NOT MODIFY BELOW: FASTAPI WEBHOOK ENDPOINT ===
 app = FastAPI()
 
 @app.post("/webhook")
@@ -48,9 +51,11 @@ async def webhook(request: Request):
     update = Update.de_json(data, application.bot)
     await application.process_update(update)
     return {"ok": True}
+# === DO NOT MODIFY ABOVE ===
 
-# === TELEGRAM BOT ===
+# === DO NOT MODIFY BELOW: TELEGRAM APP SETUP ===
 application = Application.builder().token(BOT_TOKEN).build()
+# === DO NOT MODIFY ABOVE ===
 
 # === COMMAND HANDLERS ===
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -63,6 +68,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
 
+
 async def set_myanmar_timezone(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.answer()
     user_id = update.effective_user.id
@@ -70,9 +76,11 @@ async def set_myanmar_timezone(update: Update, context: ContextTypes.DEFAULT_TYP
     await update.callback_query.edit_message_text("✅ Timezone set to Myanmar Time (+06:30).")
     await show_main_menu(update, context)
 
+
 async def enter_manual_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.answer()
-    await update.callback_query.edit_message_text("📥 Please type your timezone offset manually (e.g. `+06:30`).")
+    await update.callback_query.edit_message_text("📅 Please type your timezone offset manually (e.g. `+06:30`).")
+
 
 async def handle_timezone(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -84,13 +92,15 @@ async def handle_timezone(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"✅ Timezone set to UTC{offset}")
     await show_main_menu(update, context)
 
+
 # === MAIN MENU ===
 async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    keyboard = [[InlineKeyboardButton("🕯️ Wax", callback_data='wax')]]
+    keyboard = [[InlineKeyboardButton("🔯 Wax", callback_data='wax')]]
     if update.callback_query:
         await update.callback_query.message.reply_text("Main Menu:", reply_markup=InlineKeyboardMarkup(keyboard))
     else:
         await update.message.reply_text("Main Menu:", reply_markup=InlineKeyboardMarkup(keyboard))
+
 
 # === WAX MENU ===
 async def show_wax_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -103,9 +113,11 @@ async def show_wax_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.answer()
     await update.callback_query.edit_message_text("Choose an event:", reply_markup=InlineKeyboardMarkup(keyboard))
 
+
 async def back_to_main(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.answer()
     await show_main_menu(update, context)
+
 
 # === EVENT TIME HELPERS ===
 def get_next_event_time(event: str, user_offset: str):
@@ -113,18 +125,15 @@ def get_next_event_time(event: str, user_offset: str):
     hour = now.hour
 
     if event == "grandma":
-        # Even hours + 5 mins (e.g., 0:05, 2:05, 4:05…)
         next_hour = hour + (0 if hour % 2 == 0 and now.minute < 5 else 1 if hour % 2 == 1 else 2)
         minute = 5
     elif event == "geyser":
-        # Odd hours + 35 mins (e.g., 1:35, 3:35, 5:35…)
         if hour % 2 == 1 and now.minute < 35:
             next_hour = hour
         else:
             next_hour = hour + (1 if hour % 2 == 0 else 2)
         minute = 35
     elif event == "turtle":
-        # Every 4 hours starting from 0:20 (e.g., 0:20, 4:20, 8:20…)
         base_hours = [0, 4, 8, 12, 16, 20]
         future_times = [
             now.replace(hour=h, minute=20, second=0, microsecond=0)
@@ -142,13 +151,11 @@ def get_next_event_time(event: str, user_offset: str):
         if next_time <= now:
             next_time += timedelta(hours=2)
 
-    # Convert to user's local time
     sign = 1 if user_offset.startswith('+') else -1
     h, m = map(int, user_offset[1:].split(":"))
     offset_delta = timedelta(hours=sign * h, minutes=sign * m)
     local_time = next_time + offset_delta
 
-    # Time remaining
     remaining = int((next_time - now).total_seconds() // 60)
     return f"{local_time.strftime('%H:%M')} (in {remaining} mins)"
 
@@ -179,14 +186,15 @@ async def handle_event(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
 
+
 # === PLACEHOLDER NOTIFY CALLBACK ===
 async def handle_notify_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.answer("Notification feature coming soon!")
 
+
 # === HANDLERS ===
 application.add_handler(CommandHandler("start", start))
 application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_timezone))
-
 application.add_handler(CallbackQueryHandler(set_myanmar_timezone, pattern="^set_myanmar$"))
 application.add_handler(CallbackQueryHandler(enter_manual_callback, pattern="^enter_manual$"))
 application.add_handler(CallbackQueryHandler(show_wax_menu, pattern="^wax$"))
@@ -194,7 +202,8 @@ application.add_handler(CallbackQueryHandler(back_to_main, pattern="^back_to_mai
 application.add_handler(CallbackQueryHandler(handle_event, pattern="^(grandma|geyser|turtle)$"))
 application.add_handler(CallbackQueryHandler(handle_notify_callback, pattern="^notify_.*$"))
 
-# === STARTUP ===
+
+# === DO NOT MODIFY BELOW: BOT INITIALIZATION ===
 async def main():
     await application.initialize()
     await application.start()
@@ -207,3 +216,4 @@ if __name__ == "__main__":
     nest_asyncio.apply()
     asyncio.run(main())
     uvicorn.run(app, host="0.0.0.0", port=10000)
+# === DO NOT MODIFY ABOVE ===
