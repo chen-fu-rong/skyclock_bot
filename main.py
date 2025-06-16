@@ -30,141 +30,81 @@ init_db()
 BOT_TOKEN = os.getenv('BOT_TOKEN')
 WEBHOOK_URL = os.getenv('WEBHOOK_URL')
 PORT = int(os.getenv('PORT', 10000))
+WEBHOOK_SECRET = os.getenv('WEBHOOK_SECRET', 'your-secret-token-here')
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
-    user_id = user.id
+    logger.info(f"User {user.id} started conversation")
     
-    # Check if user exists in DB
-    db_user = get_user(user_id)
-    if not db_user:
-        update_user(user_id, user.full_name)
+    # Update user in database
+    update_user(user.id, user.full_name)
     
     keyboard = [
         [InlineKeyboardButton("🇲🇲 Myanmar Time", callback_data='myanmar_time')],
-        [InlineKeyboardButton("🕒 Check Current Time", callback_data='current_time')],
-        [InlineKeyboardButton("⚙️ Settings", callback_data='settings')],
-        [InlineKeyboardButton("ℹ️ Help", callback_data='help')]
+        [InlineKeyboardButton("🕒 Game Time", callback_data='game_time')],
+        [InlineKeyboardButton("⚙️ Settings", callback_data='settings')]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
     
-    await update.message.reply_text(
+    await update.message.reply_html(
         f"Hi {user.mention_html()}! I'm Sky Clock Bot ⏰\n\n"
-        "Choose an option below:",
-        reply_markup=reply_markup,
-        parse_mode='HTML'
+        "What would you like to check?",
+        reply_markup=reply_markup
     )
 
-async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    try:
-        query = update.callback_query
-        await query.answer()
-        
-        if query.data == 'myanmar_time':
-            myanmar_time = get_myanmar_time()
-            time_until_reset = calculate_reset_time()
-            
-            await query.edit_message_text(
-                text=f"🇲🇲 <b>Myanmar Time (UTC+6:30)</b>\n\n"
-                     f"🕒 <b>{myanmar_time.strftime('%H:%M %p')}</b>\n"
-                     f"📅 {myanmar_time.strftime('%d %B %Y')}\n\n"
-                     f"⏳ Next reset in: {time_until_reset}",
-                parse_mode='HTML',
-                reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("🔄 Refresh", callback_data='myanmar_time')],
-                    [InlineKeyboardButton("🔙 Back", callback_data='back')]
-                ])
-            )
-            
-        elif query.data == 'current_time':
-            await query.edit_message_text(
-                text="⏰ Current in-game time is: [time would be here]",
-                parse_mode='HTML'
-            )
-            
-        elif query.data == 'settings':
-            keyboard = [
-                [InlineKeyboardButton("🔙 Back", callback_data='back')]
-            ]
-            reply_markup = InlineKeyboardMarkup(keyboard)
-            await query.edit_message_text(
-                text="⚙️ Settings Menu\n\nConfigure your preferences:",
-                reply_markup=reply_markup
-            )
-            
-        elif query.data == 'help':
-            await query.edit_message_text(
-                text="ℹ️ <b>Help</b>\n\n"
-                "This bot helps track Sky: Children of the Light in-game time.\n\n"
-                "<b>Time Zones:</b>\n"
-                "🇲🇲 Myanmar Time (UTC+6:30)\n\n"
-                "<b>Commands:</b>\n"
-                "/start - Show main menu\n"
-                "/time - Check current time",
-                parse_mode='HTML'
-            )
-            
-        elif query.data == 'back':
-            keyboard = [
-                [InlineKeyboardButton("🇲🇲 Myanmar Time", callback_data='myanmar_time')],
-                [InlineKeyboardButton("🕒 Check Current Time", callback_data='current_time')],
-                [InlineKeyboardButton("⚙️ Settings", callback_data='settings')],
-                [InlineKeyboardButton("ℹ️ Help", callback_data='help')]
-            ]
-            reply_markup = InlineKeyboardMarkup(keyboard)
-            await query.edit_message_text(
-                text="Main Menu:",
-                reply_markup=reply_markup
-            )
-            
-    except Exception as e:
-        logger.error(f"Button error: {str(e)}")
-        await query.answer("⚠️ Something went wrong. Please try again.", show_alert=True)
-
-def calculate_reset_time():
-    now = datetime.utcnow()
-    next_reset = now.replace(hour=0, minute=0, second=0) + timedelta(days=1)
-    time_left = next_reset - now
-    hours, remainder = divmod(time_left.seconds, 3600)
-    minutes = remainder // 60
-    return f"{hours}h {minutes}m"
+async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    
+    if query.data == 'myanmar_time':
+        time = get_myanmar_time()
+        await query.edit_message_text(
+            text=f"🇲🇲 <b>Myanmar Time (UTC+6:30)</b>\n\n"
+                 f"🕒 <b>{time.strftime('%H:%M %p')}</b>\n"
+                 f"📅 {time.strftime('%A, %d %B %Y')}",
+            parse_mode='HTML',
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("🔄 Refresh", callback_data='myanmar_time')],
+                [InlineKeyboardButton("🔙 Main Menu", callback_data='main_menu')]
+            ])
+        )
+    
+    elif query.data == 'main_menu':
+        await start(update, context)
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "Please use the menu buttons or commands to interact with me!",
+        "Please use the buttons or /start command to interact with me!",
         reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("Menu", callback_data='back')]
+            [InlineKeyboardButton("Start", callback_data='main_menu')]
         ])
     )
 
 async def set_webhook(app: Application):
     await app.bot.set_webhook(
-        f"{WEBHOOK_URL}/webhook",
+        url=f"{WEBHOOK_URL}/webhook",
+        secret_token=WEBHOOK_SECRET,
         allowed_updates=["message", "callback_query"]
     )
-    logger.info(f"✅ Webhook set to {WEBHOOK_URL}/webhook")
-
-# [Previous imports remain the same]
+    logger.info("Webhook set up successfully")
 
 def main():
-    application = Application.builder().token(BOT_TOKEN).build()
+    application = Application.builder().token(BOT_TOKEN).post_init(set_webhook).build()
     
     # Register handlers
     application.add_handler(CommandHandler("start", start))
+    application.add_handler(CallbackQueryHandler(button_handler))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-    application.add_handler(CallbackQueryHandler(button))
     
-    # Try webhook first, fallback to polling
-    try:
+    # Run bot
+    if 'RENDER' in os.environ:
         application.run_webhook(
             listen="0.0.0.0",
             port=PORT,
             webhook_url=f"{WEBHOOK_URL}/webhook",
-            secret_token='YOUR_SECRET_TOKEN'  # Add this for security
+            secret_token=WEBHOOK_SECRET
         )
-        application.post_init = set_webhook
-    except RuntimeError as e:
-        logger.warning(f"Webhook not available, falling back to polling: {str(e)}")
+    else:
         application.run_polling()
 
 if __name__ == "__main__":
