@@ -13,6 +13,8 @@ services:
           property: connectionString
       - key: WEBHOOK_URL
         value: https://skyclock-bot.onrender.com/webhook
+      - key: ADMIN_IDS
+        value: 484926463
       - key: RENDER
         value: true
 

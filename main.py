@@ -18,6 +18,7 @@ from psycopg_pool import AsyncConnectionPool
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 DATABASE_URL = os.getenv("DATABASE_URL")
 WEBHOOK_URL = os.getenv("WEBHOOK_URL")
+ADMIN_IDS = [int(id.strip()) for id in os.getenv("ADMIN_IDS", "").split(",") if id.strip()]
 IS_RENDER = "RENDER" in os.environ
 PORT = int(os.getenv("PORT", 10000))
 
@@ -135,6 +136,14 @@ async def set_notification(user_id: int, event: str):
                 ON CONFLICT (user_id, event) DO NOTHING;
             """, (user_id, event))
 
+async def get_all_user_ids():
+    """Get all user IDs from the database"""
+    async with pool.connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute("SELECT user_id FROM users;")
+            rows = await cur.fetchall()
+            return [row[0] for row in rows]
+
 # === SKY TIME UTILITIES ===
 def get_sky_time() -> datetime:
     """Get current Sky time (UTC)"""
@@ -177,6 +186,126 @@ def get_next_event_time(event: str) -> tuple:
     
     return next_utc, next_myanmar, remaining_minutes
 
+# === ADMIN FEATURES ===
+async def admin_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Show admin menu"""
+    if update.effective_user.id not in ADMIN_IDS:
+        await update.message.reply_text("❌ Access denied. You are not an admin.")
+        return
+        
+    keyboard = [
+        [InlineKeyboardButton("📢 Broadcast to All", callback_data='broadcast_all')],
+        [InlineKeyboardButton("✉️ Message to User", callback_data='message_user')],
+        [InlineKeyboardButton("⬅️ Back to Main", callback_data='back_to_main')]
+    ]
+    await update.message.reply_text(
+        "Admin Menu:",
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
+
+async def handle_admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle /admin command"""
+    if update.effective_user.id not in ADMIN_IDS:
+        await update.message.reply_text("❌ Access denied. You are not an admin.")
+        return
+        
+    await admin_menu(update, context)
+
+async def start_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Initiate broadcast process"""
+    if update.effective_user.id not in ADMIN_IDS:
+        await update.callback_query.answer("❌ Access denied")
+        return
+        
+    await update.callback_query.answer()
+    context.user_data["action"] = "broadcast"
+    await update.callback_query.edit_message_text(
+        "📝 Please enter the message you want to broadcast to all users:",
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ Cancel", callback_data='cancel_action')]])
+    )
+
+async def start_user_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Initiate message to specific user"""
+    if update.effective_user.id not in ADMIN_IDS:
+        await update.callback_query.answer("❌ Access denied")
+        return
+        
+    await update.callback_query.answer()
+    context.user_data["action"] = "user_message"
+    await update.callback_query.edit_message_text(
+        "📝 Please enter the user ID followed by the message:\nExample: 123456789 Hello!",
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ Cancel", callback_data='cancel_action')]])
+    )
+
+async def handle_admin_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Process admin text input"""
+    if update.effective_user.id not in ADMIN_IDS:
+        await update.message.reply_text("❌ Access denied. You are not an admin.")
+        return
+        
+    action = context.user_data.get("action")
+    text = update.message.text.strip()
+    
+    if not action:
+        await update.message.reply_text("❌ No action in progress. Use /admin to start.")
+        return
+        
+    if action == "broadcast":
+        # Broadcast to all users
+        user_ids = await get_all_user_ids()
+        success = 0
+        failed = 0
+        
+        for user_id in user_ids:
+            try:
+                await application.bot.send_message(
+                    chat_id=user_id,
+                    text=f"📢 <b>Broadcast from Admin:</b>\n\n{text}",
+                    parse_mode="HTML"
+                )
+                success += 1
+            except Exception:
+                failed += 1
+            await asyncio.sleep(0.1)  # Rate limiting
+        
+        await update.message.reply_text(
+            f"✅ Broadcast completed!\n"
+            f"• Success: {success} users\n"
+            f"• Failed: {failed} users"
+        )
+        del context.user_data["action"]
+        
+    elif action == "user_message":
+        # Message to specific user
+        parts = text.split(maxsplit=1)
+        if len(parts) < 2:
+            await update.message.reply_text("❌ Invalid format. Please use: user_id message")
+            return
+            
+        try:
+            user_id = int(parts[0])
+            message = parts[1]
+            
+            await application.bot.send_message(
+                chat_id=user_id,
+                text=f"✉️ <b>Message from Admin:</b>\n\n{message}",
+                parse_mode="HTML"
+            )
+            await update.message.reply_text(f"✅ Message sent to user {user_id}")
+        except ValueError:
+            await update.message.reply_text("❌ Invalid user ID. Must be a number.")
+        except Exception as e:
+            await update.message.reply_text(f"❌ Failed to send message: {e}")
+        finally:
+            del context.user_data["action"]
+            
+async def cancel_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Cancel current admin action"""
+    if "action" in context.user_data:
+        del context.user_data["action"]
+    await update.callback_query.answer("Action cancelled")
+    await admin_menu(update, context)
+
 # === BOT COMMANDS AND CALLBACKS ===
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = [
@@ -214,6 +343,11 @@ async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [InlineKeyboardButton("🕰️ Sky Clock", callback_data='sky_clock')],
         [InlineKeyboardButton("🕯️ Wax Events", callback_data='wax')]
     ]
+    
+    # Add admin menu button for admins
+    if update.effective_user.id in ADMIN_IDS:
+        keyboard.append([InlineKeyboardButton("👑 Admin Panel", callback_data='admin_menu')])
+    
     if update.callback_query:
         await update.callback_query.message.reply_text("Main Menu:", reply_markup=InlineKeyboardMarkup(keyboard))
     else:
@@ -347,12 +481,17 @@ async def webhook(request: Request):
 
 # === ADD HANDLERS ===
 application.add_handler(CommandHandler("start", start))
+application.add_handler(CommandHandler("admin", handle_admin_command))
 application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_timezone))
 application.add_handler(CallbackQueryHandler(set_myanmar_timezone, pattern="^set_myanmar$"))
 application.add_handler(CallbackQueryHandler(enter_manual_callback, pattern="^enter_manual$"))
 application.add_handler(CallbackQueryHandler(show_sky_clock, pattern="^sky_clock$"))
 application.add_handler(CallbackQueryHandler(show_wax_menu, pattern="^wax$"))
 application.add_handler(CallbackQueryHandler(back_to_main, pattern="^back_to_main$"))
+application.add_handler(CallbackQueryHandler(admin_menu, pattern="^admin_menu$"))
+application.add_handler(CallbackQueryHandler(start_broadcast, pattern="^broadcast_all$"))
+application.add_handler(CallbackQueryHandler(start_user_message, pattern="^message_user$"))
+application.add_handler(CallbackQueryHandler(cancel_action, pattern="^cancel_action$"))
 application.add_handler(CallbackQueryHandler(handle_event, pattern="^(grandma|geyser|turtle)$"))
 application.add_handler(CallbackQueryHandler(handle_notify_callback, pattern="^notify_.*$"))
 

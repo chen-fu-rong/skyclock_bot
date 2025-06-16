@@ -24,7 +24,18 @@ pool = AsyncConnectionPool(
 # Create bot instance
 bot = Bot(token=os.getenv("BOT_TOKEN"))
 
-# Calculate next event time
+# Constants
+MYANMAR_OFFSET = timedelta(hours=6, minutes=30)
+EVENT_TIMES = {
+    "grandma": {"minute": 5, "hour_parity": "even"},
+    "geyser": {"minute": 35, "hour_parity": "odd"},
+    "turtle": {"minute": 20, "hour_parity": "even"}
+}
+
+# Time utilities
+def format_12h(dt: datetime) -> str:
+    return dt.strftime("%I:%M %p").lstrip("0")
+
 def next_occurrence(base: datetime, minute: int, hour_parity: str) -> datetime:
     candidate = base.replace(minute=minute, second=0, microsecond=0)
     if candidate <= base:
@@ -34,43 +45,35 @@ def next_occurrence(base: datetime, minute: int, hour_parity: str) -> datetime:
         candidate += timedelta(hours=1)
     return candidate
 
-async def get_tz_offset(user_id: int) -> str:
-    async with pool.connection() as conn:
-        async with conn.cursor() as cur:
-            await cur.execute(
-                "SELECT tz_offset FROM users WHERE user_id = %s;",
-                (user_id,)
-            )
-            row = await cur.fetchone()
-            return row[0] if row else "+00:00"
+def get_next_event_time(event: str) -> tuple:
+    now_utc = datetime.utcnow().replace(tzinfo=timezone.utc)
+    config = EVENT_TIMES[event]
+    
+    # Calculate next occurrence in UTC
+    next_utc = next_occurrence(now_utc, config["minute"], config["hour_parity"])
+    
+    # Convert to Myanmar time
+    next_myanmar = next_utc + MYANMAR_OFFSET
+    
+    return next_utc, next_myanmar
 
-async def get_next_event_time(event: str, user_offset: str) -> tuple:
-    now = datetime.now(timezone.utc).replace(tzinfo=None)
-    if event == "grandma":
-        next_time = next_occurrence(now, 5, "even")
-    elif event == "geyser":
-        next_time = next_occurrence(now, 35, "odd")
-    elif event == "turtle":
-        next_time = next_occurrence(now, 20, "even")
-    else:
-        return None, None
-
-    sign = 1 if user_offset.startswith('+') else -1
-    h, m = map(int, user_offset[1:].split(":"))
-    offset_delta = timedelta(hours=sign * h, minutes=sign * m)
-    local_time = next_time + offset_delta
-    return next_time, local_time
-
-async def send_notification(user_id: int, event: str):
+async def send_notification(user_id: int, event: str, next_utc: datetime, next_myanmar: datetime):
     try:
-        user_tz = await get_tz_offset(user_id)
-        event_utc_time, event_local_time = await get_next_event_time(event, user_tz)
-        if not event_utc_time:
-            return
-            
+        # Calculate remaining minutes
+        now = datetime.utcnow().replace(tzinfo=timezone.utc)
+        remaining = int((next_utc - now).total_seconds() // 60)
+        
+        # Format the message
+        message = (
+            f"⏰ <b>Reminder: {event.capitalize()} starts soon!</b>\n"
+            f"🕒 <b>Myanmar Time:</b> {format_12h(next_myanmar)}\n"
+            f"⏱️ <b>Starting in:</b> {remaining} minutes"
+        )
+        
         await bot.send_message(
             chat_id=user_id,
-            text=f"⏰ Reminder: {event.capitalize()} starts at {event_local_time.strftime('%I:%M %p')} (your time)!"
+            text=message,
+            parse_mode="HTML"
         )
         logger.info(f"✅ Notification sent to {user_id} for {event}")
     except Exception as e:
@@ -78,7 +81,7 @@ async def send_notification(user_id: int, event: str):
 
 async def check_and_notify():
     logger.info("🔍 Checking scheduled notifications...")
-    now_utc = datetime.utcnow().replace(second=0, microsecond=0)
+    now_utc = datetime.utcnow().replace(tzinfo=timezone.utc)
     notify_before = timedelta(minutes=5)  # Notify 5 minutes before event
 
     async with pool.connection() as conn:
@@ -88,14 +91,12 @@ async def check_and_notify():
 
             for user_id, event in rows:
                 try:
-                    user_tz = await get_tz_offset(user_id)
-                    event_utc_time, _ = await get_next_event_time(event, user_tz)
-                    if not event_utc_time:
-                        continue
-
+                    # Get event times
+                    event_utc_time, event_myanmar_time = get_next_event_time(event)
+                    
                     # Check if current time is within notification window
                     if event_utc_time - notify_before <= now_utc < event_utc_time:
-                        await send_notification(user_id, event)
+                        await send_notification(user_id, event, event_utc_time, event_myanmar_time)
                 except Exception as e:
                     logger.error(f"❌ Error processing user {user_id}: {e}")
 
