@@ -1,12 +1,16 @@
+import os
 import asyncio
 import logging
-from main import pool, application, get_tz_offset
-
-logger = logging.getLogger(__name__)
-
-# Calculate next event time (copied from main.py to keep self-contained)
 from datetime import datetime, timedelta, timezone
 
+from telegram import Bot
+from main import pool, get_tz_offset
+
+logger = logging.getLogger(__name__)
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+bot = Bot(BOT_TOKEN)
+
+# Calculate next event time
 def next_occurrence(base: datetime, minute: int, hour_parity: str) -> datetime:
     candidate = base.replace(minute=minute, second=0, microsecond=0)
     if candidate <= base:
@@ -16,7 +20,7 @@ def next_occurrence(base: datetime, minute: int, hour_parity: str) -> datetime:
         candidate += timedelta(hours=1)
     return candidate
 
-async def get_next_event_time(event: str, user_offset: str) -> datetime:
+async def get_next_event_time(event: str, user_offset: str) -> tuple:
     now = datetime.now(timezone.utc).replace(tzinfo=None)
     if event == "grandma":
         next_time = next_occurrence(now, 5, "even")
@@ -25,7 +29,7 @@ async def get_next_event_time(event: str, user_offset: str) -> datetime:
     elif event == "turtle":
         next_time = next_occurrence(now, 20, "even")
     else:
-        return None
+        return None, None
 
     sign = 1 if user_offset.startswith('+') else -1
     h, m = map(int, user_offset[1:].split(":"))
@@ -35,7 +39,7 @@ async def get_next_event_time(event: str, user_offset: str) -> datetime:
 
 async def send_notification(user_id: int, event: str, event_utc_time: datetime, local_time: datetime):
     try:
-        await application.bot.send_message(
+        await bot.send_message(
             chat_id=user_id,
             text=f"⏰ Reminder: {event.capitalize()} event starts at {local_time.strftime('%I:%M %p')} (your local time)."
         )
@@ -44,18 +48,12 @@ async def send_notification(user_id: int, event: str, event_utc_time: datetime, 
         logger.error(f"Failed to send notification to {user_id}: {e}")
 
 async def check_and_notify():
-    """
-    Periodic check for upcoming events to notify users.
-    Sends notification 5 minutes before event time.
-    """
     logger.info("Checking scheduled notifications...")
-
     now_utc = datetime.utcnow().replace(second=0, microsecond=0)
     notify_before = timedelta(minutes=5)  # Notify 5 minutes before event
 
     async with pool.connection() as conn:
         async with conn.cursor() as cur:
-            # Fetch all users and events with notifications enabled
             await cur.execute("SELECT user_id, event FROM notifications;")
             rows = await cur.fetchall()
 
@@ -65,7 +63,7 @@ async def check_and_notify():
                 if event_utc_time is None:
                     continue
 
-                # If current time is within notification window
+                # Check if current time is within notification window
                 if event_utc_time - notify_before <= now_utc < event_utc_time:
                     await send_notification(user_id, event, event_utc_time, event_local_time)
 
