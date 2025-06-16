@@ -3,6 +3,8 @@ import logging
 import psycopg2
 from psycopg2 import sql
 from contextlib import contextmanager
+from datetime import datetime, timedelta
+import pytz
 
 # Configure logging
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -70,3 +72,10 @@ def update_user(user_id, username):
         logger.info(f"Updated user {user_id} in database")
     except Exception as e:
         logger.error(f"Error updating user: {str(e)}")
+
+def get_myanmar_time():
+    """Get current Myanmar time (UTC+6:30)"""
+    utc_time = datetime.utcnow()
+    return utc_time + timedelta(hours=6, minutes=30)
+    # Alternative using pytz:
+    # return datetime.now(pytz.timezone('Asia/Yangon'))

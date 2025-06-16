@@ -1,5 +1,6 @@
 import os
 import logging
+from datetime import datetime, timedelta
 from dotenv import load_dotenv
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
@@ -10,7 +11,7 @@ from telegram.ext import (
     ContextTypes,
     filters
 )
-from worker import init_db, get_user, update_user
+from worker import init_db, get_user, update_user, get_myanmar_time
 
 # Load environment variables
 load_dotenv()
@@ -40,6 +41,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         update_user(user_id, user.full_name)
     
     keyboard = [
+        [InlineKeyboardButton("🇲🇲 Myanmar Time", callback_data='myanmar_time')],
         [InlineKeyboardButton("🕒 Check Current Time", callback_data='current_time')],
         [InlineKeyboardButton("⚙️ Settings", callback_data='settings')],
         [InlineKeyboardButton("ℹ️ Help", callback_data='help')]
@@ -57,17 +59,30 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         query = update.callback_query
         await query.answer()
-        user_id = query.from_user.id
-        data = query.data
         
-        logger.info(f"Button pressed by {user_id}: {data}")
-        
-        if data == 'current_time':
+        if query.data == 'myanmar_time':
+            myanmar_time = get_myanmar_time()
+            time_until_reset = calculate_reset_time()
+            
+            await query.edit_message_text(
+                text=f"🇲🇲 <b>Myanmar Time (UTC+6:30)</b>\n\n"
+                     f"🕒 <b>{myanmar_time.strftime('%H:%M %p')}</b>\n"
+                     f"📅 {myanmar_time.strftime('%d %B %Y')}\n\n"
+                     f"⏳ Next reset in: {time_until_reset}",
+                parse_mode='HTML',
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("🔄 Refresh", callback_data='myanmar_time')],
+                    [InlineKeyboardButton("🔙 Back", callback_data='back')]
+                ])
+            )
+            
+        elif query.data == 'current_time':
             await query.edit_message_text(
                 text="⏰ Current in-game time is: [time would be here]",
                 parse_mode='HTML'
             )
-        elif data == 'settings':
+            
+        elif query.data == 'settings':
             keyboard = [
                 [InlineKeyboardButton("🔙 Back", callback_data='back')]
             ]
@@ -76,15 +91,22 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 text="⚙️ Settings Menu\n\nConfigure your preferences:",
                 reply_markup=reply_markup
             )
-        elif data == 'help':
+            
+        elif query.data == 'help':
             await query.edit_message_text(
-                text="ℹ️ Help\n\n"
+                text="ℹ️ <b>Help</b>\n\n"
                 "This bot helps track Sky: Children of the Light in-game time.\n\n"
-                "Use the buttons to interact with me!",
+                "<b>Time Zones:</b>\n"
+                "🇲🇲 Myanmar Time (UTC+6:30)\n\n"
+                "<b>Commands:</b>\n"
+                "/start - Show main menu\n"
+                "/time - Check current time",
                 parse_mode='HTML'
             )
-        elif data == 'back':
+            
+        elif query.data == 'back':
             keyboard = [
+                [InlineKeyboardButton("🇲🇲 Myanmar Time", callback_data='myanmar_time')],
                 [InlineKeyboardButton("🕒 Check Current Time", callback_data='current_time')],
                 [InlineKeyboardButton("⚙️ Settings", callback_data='settings')],
                 [InlineKeyboardButton("ℹ️ Help", callback_data='help')]
@@ -97,8 +119,15 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             
     except Exception as e:
         logger.error(f"Button error: {str(e)}")
-        if query:
-            await query.answer("⚠️ Something went wrong. Please try again.", show_alert=True)
+        await query.answer("⚠️ Something went wrong. Please try again.", show_alert=True)
+
+def calculate_reset_time():
+    now = datetime.utcnow()
+    next_reset = now.replace(hour=0, minute=0, second=0) + timedelta(days=1)
+    time_left = next_reset - now
+    hours, remainder = divmod(time_left.seconds, 3600)
+    minutes = remainder // 60
+    return f"{hours}h {minutes}m"
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
@@ -121,7 +150,7 @@ def main():
     # Register handlers
     application.add_handler(CommandHandler("start", start))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-    application.add_handler(CallbackQueryHandler(button))  # This fixes the button issue
+    application.add_handler(CallbackQueryHandler(button))
     
     # Webhook setup
     application.run_webhook(
