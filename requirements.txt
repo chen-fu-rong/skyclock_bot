@@ -1,11 +1,6 @@
+psycopg[binary]
+python-telegram-bot[socks,webhooks]==20.3
 fastapi
 uvicorn
-sqlalchemy
-psycopg2-binary
 python-dotenv
-asyncpg
-python-telegram-bot==20.7
 pytz
-apscheduler
-python-telegram-bot[webhooks]
-nest_asyncio
