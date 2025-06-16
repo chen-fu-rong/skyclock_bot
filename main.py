@@ -144,6 +144,8 @@ async def set_webhook(app: Application):
     )
     logger.info(f"✅ Webhook set to {WEBHOOK_URL}/webhook")
 
+# [Previous imports remain the same]
+
 def main():
     application = Application.builder().token(BOT_TOKEN).build()
     
@@ -152,15 +154,18 @@ def main():
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     application.add_handler(CallbackQueryHandler(button))
     
-    # Webhook setup
-    application.run_webhook(
-        listen="0.0.0.0",
-        port=PORT,
-        webhook_url=f"{WEBHOOK_URL}/webhook"
-    )
-    
-    # Set webhook after startup
-    application.post_init = set_webhook
+    # Try webhook first, fallback to polling
+    try:
+        application.run_webhook(
+            listen="0.0.0.0",
+            port=PORT,
+            webhook_url=f"{WEBHOOK_URL}/webhook",
+            secret_token='YOUR_SECRET_TOKEN'  # Add this for security
+        )
+        application.post_init = set_webhook
+    except RuntimeError as e:
+        logger.warning(f"Webhook not available, falling back to polling: {str(e)}")
+        application.run_polling()
 
 if __name__ == "__main__":
     main()
