@@ -1,4 +1,6 @@
 import os
+import os
+PORT = int(os.environ.get("PORT", 10000))
 import asyncio
 import re
 import logging
@@ -296,6 +298,4 @@ application.add_handler(CallbackQueryHandler(handle_notify_callback, pattern="^n
 
 # === ✅ STARTUP ===
 if __name__ == "__main__":
-    import uvicorn
-    port = int(os.environ.get("PORT", 10000))
-    uvicorn.run(app, host="0.0.0.0", port=port)
+    uvicorn.run("main:app", host="0.0.0.0", port=PORT, reload=False)

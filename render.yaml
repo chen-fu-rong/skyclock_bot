@@ -3,7 +3,7 @@ services:
     name: skyclock-bot
     runtime: python
     buildCommand: pip install -r requirements.txt
-    startCommand: python main.py
+    startCommand: python main.py  # Updated command
     envVars:
       - key: BOT_TOKEN
         value: YOUR_BOT_TOKEN
@@ -15,7 +15,3 @@ services:
         value: https://skyclock-bot.onrender.com
       - key: RENDER
         value: true
-
-databases:
-  - name: skyclock-db
-    plan: free
