@@ -9,3 +9,4 @@ fastapi
 psycopg_pool
 psycopg
 telebot
+flask
