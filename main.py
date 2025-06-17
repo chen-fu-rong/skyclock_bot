@@ -44,26 +44,53 @@ def set_user_timezone(user_id, timezone_str):
     ''', (user_id, timezone_str))
     conn.commit()
 
-# Time Calculations (UTC-based)
+# Myanmar time is UTC+6:30
+MYANMAR_OFFSET = timedelta(hours=6, minutes=30)
+
+# Event Calculations (UTC-based)
 def next_reset_utc():
     now = datetime.utcnow()
     next_reset = now.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=1)
     return next_reset
 
-def next_geyser_utc():
+def next_grandma_utc():
     now = datetime.utcnow()
+    # Grandma: UTC+6:30 even hours + 5 min → UTC = (even hours - 6:30) + 5 min
+    # = even hours - 6:25 → odd hours + 35 min
     base_hour = now.hour - (now.hour % 2)  # Previous even hour
     candidates = [
-        now.replace(hour=base_hour, minute=5, second=0, microsecond=0),
         now.replace(hour=base_hour, minute=35, second=0, microsecond=0),
-        now.replace(hour=base_hour, minute=5, second=0, microsecond=0) + timedelta(hours=2)
+        now.replace(hour=base_hour, minute=35, second=0, microsecond=0) + timedelta(hours=2)
     ]
     return min(t for t in candidates if t > now)
 
-def next_grandma_utc():
+def next_geyser_utc():
     now = datetime.utcnow()
-    candidate = now.replace(minute=35, second=0, microsecond=0)
-    return candidate if candidate > now else candidate + timedelta(hours=1)
+    # Geyser: UTC+6:30 odd hours + 35 min → UTC = (odd hours - 6:30) + 35 min
+    # = odd hours - 5:55 → even hours + 5 min
+    base_hour = (now.hour + 1) % 24  # Next odd hour
+    if base_hour % 2 == 0:
+        base_hour = (base_hour + 1) % 24
+    candidates = [
+        now.replace(hour=base_hour, minute=5, second=0, microsecond=0),
+        now.replace(hour=(base_hour + 2) % 24, minute=5, second=0, microsecond=0)
+    ]
+    # Handle day wrap
+    for t in candidates:
+        if t < now:
+            t += timedelta(days=1)
+    return min(t for t in candidates if t > now)
+
+def next_turtle_utc():
+    now = datetime.utcnow()
+    # Turtle: UTC+6:30 even hours + 20 min → UTC = (even hours - 6:30) + 20 min
+    # = even hours - 6:10 → even hours + 50 min
+    base_hour = now.hour - (now.hour % 2)  # Previous even hour
+    candidates = [
+        now.replace(hour=base_hour, minute=50, second=0, microsecond=0),
+        now.replace(hour=base_hour, minute=50, second=0, microsecond=0) + timedelta(hours=2)
+    ]
+    return min(t for t in candidates if t > now)
 
 # Timezone Conversion
 def to_user_time(utc_time, user_id):
@@ -133,30 +160,37 @@ def send_reset(message):
 @bot.message_handler(commands=['wax'])
 def send_wax(message):
     # Get event times in UTC
-    geyser_utc = next_geyser_utc()
     grandma_utc = next_grandma_utc()
+    geyser_utc = next_geyser_utc()
+    turtle_utc = next_turtle_utc()
     
     # Convert to user's timezone
     user_id = message.from_user.id
-    geyser_user = to_user_time(geyser_utc, user_id)
     grandma_user = to_user_time(grandma_utc, user_id)
+    geyser_user = to_user_time(geyser_utc, user_id)
+    turtle_user = to_user_time(turtle_utc, user_id)
     
     # Calculate time until events
     now = datetime.utcnow()
-    geyser_delta = geyser_utc - now
     grandma_delta = grandma_utc - now
+    geyser_delta = geyser_utc - now
+    turtle_delta = turtle_utc - now
     
     # Format response
     response = (
         "🕯️ *Next Wax Events*\n\n"
+        f"🧓 *Grandma*\n"
+        f"• Your time: `{format_time(grandma_user)}`\n"
+        f"• UTC: `{format_time(grandma_utc)}`\n"
+        f"• In: `{format_timedelta(grandma_delta)}`\n\n"
         f"⛲ *Geyser*\n"
         f"• Your time: `{format_time(geyser_user)}`\n"
         f"• UTC: `{format_time(geyser_utc)}`\n"
         f"• In: `{format_timedelta(geyser_delta)}`\n\n"
-        f"🧓 *Grandma*\n"
-        f"• Your time: `{format_time(grandma_user)}`\n"
-        f"• UTC: `{format_time(grandma_utc)}`\n"
-        f"• In: `{format_timedelta(grandma_delta)}`"
+        f"🐢 *Turtle*\n"
+        f"• Your time: `{format_time(turtle_user)}`\n"
+        f"• UTC: `{format_time(turtle_utc)}`\n"
+        f"• In: `{format_timedelta(turtle_delta)}`"
     )
     bot.reply_to(message, response, parse_mode='Markdown')
 
@@ -164,22 +198,25 @@ def send_wax(message):
 def send_events(message):
     # Get all events
     reset_utc = next_reset_utc()
-    geyser_utc = next_geyser_utc()
     grandma_utc = next_grandma_utc()
+    geyser_utc = next_geyser_utc()
+    turtle_utc = next_turtle_utc()
     
     # Convert to user's timezone
     user_id = message.from_user.id
     user_tz = get_user_timezone(user_id)
     reset_user = to_user_time(reset_utc, user_id)
-    geyser_user = to_user_time(geyser_utc, user_id)
     grandma_user = to_user_time(grandma_utc, user_id)
+    geyser_user = to_user_time(geyser_utc, user_id)
+    turtle_user = to_user_time(turtle_utc, user_id)
     
     # Format response
     response = (
         f"⏰ *Event Times ({user_tz})*\n\n"
         f"🕛 Daily Reset: `{format_time(reset_user)}`\n"
+        f"🧓 Grandma: `{format_time(grandma_user)}`\n"
         f"⛲ Geyser: `{format_time(geyser_user)}`\n"
-        f"🧓 Grandma: `{format_time(grandma_user)}`\n\n"
+        f"🐢 Turtle: `{format_time(turtle_user)}`\n\n"
         "_Times shown in your local timezone_"
     )
     bot.reply_to(message, response, parse_mode='Markdown')
