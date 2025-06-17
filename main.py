@@ -1,215 +1,378 @@
 import os
-import telebot
-import flask
-from flask import Flask, request
-from datetime import datetime, timedelta
-import pytz
+import logging
 import psycopg2
+from urllib.parse import urlparse
+from datetime import datetime, time, timedelta, timezone
+from telegram import Update
+from telegram.ext import (
+    Application,
+    CommandHandler,
+    ContextTypes,
+    CallbackContext
+)
 
-# Initialize bot
-BOT_TOKEN = os.environ.get('BOT_TOKEN')
-bot = telebot.TeleBot(BOT_TOKEN)
+# Configure logging
+logging.basicConfig(
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    level=logging.INFO
+)
+logger = logging.getLogger(__name__)
 
-# Flask app
-app = Flask(__name__)
+# Sky event schedule (UTC)
+SKY_EVENTS = {
+    "Geyser": {
+        "times": [0, 2, 4, 6, 8, 10, 12, 14, 16, 18, 20, 22],
+        "duration": (0, 12),  # Active from :00 to :12
+        "message": "🦀 **Geyser is active now!** (0:00-12:00 UTC)\nCollect wax quickly!"
+    },
+    "Grandma": {
+        "times": [1, 7, 13, 19],
+        "duration": (35, 45),  # Active from :35 to :45
+        "message": "👵 **Grandma's dinner is ready!** (35:00-45:00 UTC)\nGet that wax!"
+    },
+    "Turtle": {
+        "times": [9, 21],
+        "duration": (50, 60),  # Active from :50 to :00
+        "message": "🐢 **Turtle is here!** (50:00-00:00 UTC)\nFollow for wax!"
+    },
+    "Sunset": {
+        "times": [12],
+        "duration": (0, 5),  # Active from :00 to :05
+        "message": "🌅 **Sunset time at Sanctuary Islands!** (00:00-05:00 UTC)"
+    }
+}
 
-@app.route('/')
-def home():
-    return "Bot is running", 200
-
-@app.route('/webhook', methods=['POST'])
-def webhook():
-    if request.headers.get('content-type') == 'application/json':
-        json_string = request.get_data().decode('utf-8')
-        update = telebot.types.Update.de_json(json_string)
-        bot.process_new_updates([update])
-        return '', 200
-    else:
-        return 'Unsupported Media Type', 415
-
-# Database setup
-DATABASE_URL = os.environ.get('DATABASE_URL')
-conn = psycopg2.connect(DATABASE_URL, sslmode='require')
-cursor = conn.cursor()
-
-cursor.execute('''
-CREATE TABLE IF NOT EXISTS users (
-    user_id BIGINT PRIMARY KEY,
-    username VARCHAR(255),
-    timezone VARCHAR(50) DEFAULT 'UTC'
-);
-''')
-conn.commit()
-
-# Helper functions
-def is_valid_timezone(tz):
-    return tz in pytz.all_timezones
-
-def get_user_timezone(user_id):
-    cursor.execute("SELECT timezone FROM users WHERE user_id = %s", (user_id,))
-    result = cursor.fetchone()
-    return result[0] if result else 'UTC'
-
-def set_user_timezone(user_id, timezone_str):
-    cursor.execute('''
-    INSERT INTO users (user_id, timezone) 
-    VALUES (%s, %s)
-    ON CONFLICT (user_id) DO UPDATE SET timezone = EXCLUDED.timezone
-    ''', (user_id, timezone_str))
-    conn.commit()
-
-def next_reset_utc():
-    now = datetime.utcnow()
-    return (now + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
-
-def next_grandma_utc():
-    now = datetime.utcnow()
-    base = now.replace(minute=0, second=0, microsecond=0)
-    even_hour = base.hour - base.hour % 2
-    for offset in range(0, 24, 2):
-        candidate = base.replace(hour=(even_hour + offset) % 24, minute=35)
-        if candidate > now:
-            return candidate
-    return base.replace(hour=0, minute=35) + timedelta(days=1)
-
-def next_geyser_utc():
-    now = datetime.utcnow()
-    next_odd_hour = (now.hour + 1) | 1
-    for offset in range(0, 24, 2):
-        candidate = now.replace(hour=(next_odd_hour + offset) % 24, minute=5, second=0, microsecond=0)
-        if candidate > now:
-            return candidate
-    return now.replace(hour=1, minute=5) + timedelta(days=1)
-
-def next_turtle_utc():
-    now = datetime.utcnow()
-    even_hour = now.hour - (now.hour % 2)
-    for offset in range(0, 24, 2):
-        candidate = now.replace(hour=(even_hour + offset) % 24, minute=50, second=0, microsecond=0)
-        if candidate > now:
-            return candidate
-    return now.replace(hour=0, minute=50) + timedelta(days=1)
-
-def to_user_time(utc_dt, user_id):
-    user_tz = get_user_timezone(user_id)
-    return pytz.utc.localize(utc_dt).astimezone(pytz.timezone(user_tz))
-
-def format_time(dt):
-    return dt.strftime("%Y-%m-%d %H:%M")
-
-def format_timedelta(td):
-    total_seconds = int(td.total_seconds())
-    hours = total_seconds // 3600
-    minutes = (total_seconds % 3600) // 60
-    return f"{hours}h {minutes}m"
-
-# Handlers
-@bot.message_handler(commands=['start', 'help'])
-def send_welcome(message):
-    help_text = """
-🕰️ <b>Sky Clock Bot</b> 🕰️
-Track Sky: Children of the Light events!
-
-<b>Commands:</b>
-/wax - Show next wax events
-/events - All upcoming events
-/settimezone <zone> - Set your timezone (e.g. /settimezone Asia/Tokyo)
-/timezone - Show current timezone
-/reset - Next daily reset time
-
-<b>Timezones</b> must be valid (e.g. America/New_York, Europe/London). 
-See full list: <a href="https://gist.github.com/heyalexej/8bf688fd67d7199be4a1682b3eec7568">Timezones</a>
-    """
-    bot.send_message(message.chat.id, help_text, parse_mode='HTML', disable_web_page_preview=True)
-
-@bot.message_handler(commands=['settimezone'])
-def set_timezone(message):
-    try:
-        timezone_str = message.text.split()[1]
-        if not is_valid_timezone(timezone_str):
-            bot.send_message(message.chat.id, "❌ Invalid timezone! Use format like 'Asia/Tokyo'")
-            return
-        set_user_timezone(message.from_user.id, timezone_str)
-        bot.send_message(message.chat.id, f"✅ Timezone set to {timezone_str}")
-    except IndexError:
-        bot.send_message(message.chat.id, "❌ Please specify a timezone. Example: /settimezone Asia/Tokyo")
-
-@bot.message_handler(commands=['timezone'])
-def show_timezone(message):
-    user_tz = get_user_timezone(message.from_user.id)
-    bot.send_message(message.chat.id, f"⏱️ Your current timezone: {user_tz}")
-
-@bot.message_handler(commands=['reset'])
-def send_reset(message):
-    reset_utc = next_reset_utc()
-    user_time = to_user_time(reset_utc, message.from_user.id)
-    time_left = reset_utc - datetime.utcnow()
-    response = (
-        f"🕛 <b>Next Daily Reset</b>\n"
-        f"• Your time: <code>{format_time(user_time)}</code>\n"
-        f"• UTC: <code>{format_time(reset_utc)}</code>\n"
-        f"• Time left: <code>{format_timedelta(time_left)}</code>"
+# Database functions
+def get_db_connection():
+    """Create and return a PostgreSQL database connection"""
+    database_url = os.getenv('DATABASE_URL')
+    if not database_url:
+        raise ValueError("DATABASE_URL environment variable not set")
+    
+    result = urlparse(database_url)
+    conn = psycopg2.connect(
+        dbname=result.path[1:],
+        user=result.username,
+        password=result.password,
+        host=result.hostname,
+        port=result.port,
+        sslmode='require'
     )
-    bot.send_message(message.chat.id, response, parse_mode='HTML')
+    return conn
 
-@bot.message_handler(commands=['wax'])
-def send_wax(message):
-    user_id = message.from_user.id
-    now = datetime.utcnow()
+def init_db():
+    """Initialize database tables"""
+    try:
+        conn = get_db_connection()
+        with conn.cursor() as cur:
+            cur.execute('''
+                CREATE TABLE IF NOT EXISTS reminders (
+                    id SERIAL PRIMARY KEY,
+                    user_id BIGINT NOT NULL,
+                    event_name VARCHAR(100) NOT NULL,
+                    event_time TIMESTAMPTZ NOT NULL,
+                    chat_id BIGINT NOT NULL,
+                    scheduled BOOLEAN DEFAULT FALSE
+                );
+            ''')
+            cur.execute('''
+                CREATE TABLE IF NOT EXISTS event_subscriptions (
+                    chat_id BIGINT PRIMARY KEY,
+                    subscribed BOOLEAN DEFAULT TRUE
+                );
+            ''')
+        conn.commit()
+        logger.info("Database initialized successfully")
+    except Exception as e:
+        logger.error(f"Database initialization failed: {str(e)}")
+    finally:
+        if conn:
+            conn.close()
 
-    events = {
-        "Grandma": next_grandma_utc(),
-        "Geyser": next_geyser_utc(),
-        "Turtle": next_turtle_utc()
-    }
+# Bot command handlers
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Send welcome message"""
+    await update.message.reply_text(
+        "🕯️ **Sky: Children of the Light Reminder Bot**\n\n"
+        "I'll notify you about in-game events! Use commands:\n"
+        "/events - Show upcoming events\n"
+        "/subscribe - Get automatic event reminders\n"
+        "/unsubscribe - Stop reminders\n"
+        "/setreminder [event] [HH:MM] - Set custom reminder\n"
+        "/help - Show all commands"
+    )
 
-    lines = ["🕯️ <b>Next Wax Events</b>\n"]
-    for name, utc_time in events.items():
-        local_time = to_user_time(utc_time, user_id)
-        time_left = utc_time - now
-        emoji = "🧓" if name == "Grandma" else "⛲" if name == "Geyser" else "🐢"
-        lines.append(f"{emoji} <b>{name}</b>")
-        lines.append(f"• Your time: <code>{format_time(local_time)}</code>")
-        lines.append(f"• UTC: <code>{format_time(utc_time)}</code>")
-        lines.append(f"• In: <code>{format_timedelta(time_left)}</code>\n")
+async def list_events(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """List upcoming Sky events"""
+    now = datetime.now(timezone.utc)
+    response = "⏰ **Upcoming Sky Events (UTC):**\n\n"
+    
+    for event_name, details in SKY_EVENTS.items():
+        times = details["times"]
+        for hour in times:
+            # Calculate next occurrence
+            event_time = now.replace(
+                hour=hour,
+                minute=0,
+                second=0,
+                microsecond=0
+            )
+            if event_time < now:
+                event_time += timedelta(days=1)
+            
+            # Format time
+            time_str = event_time.strftime("%H:%M")
+            response += f"• {event_name}: {time_str} UTC\n"
+    
+    response += "\nUse /subscribe to get automatic reminders!"
+    await update.message.reply_text(response)
 
-    bot.send_message(message.chat.id, "\n".join(lines), parse_mode='HTML')
+async def subscribe(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Subscribe chat to automatic event reminders"""
+    chat_id = update.effective_chat.id
+    
+    try:
+        conn = get_db_connection()
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO event_subscriptions (chat_id, subscribed) "
+                "VALUES (%s, TRUE) "
+                "ON CONFLICT (chat_id) DO UPDATE SET subscribed = EXCLUDED.subscribed",
+                (chat_id,)
+            )
+        conn.commit()
+        await update.message.reply_text("✅ You're now subscribed to event reminders!")
+    except Exception as e:
+        logger.error(f"Subscription failed: {str(e)}")
+        await update.message.reply_text("❌ Failed to update subscription. Please try again.")
+    finally:
+        if conn:
+            conn.close()
 
-@bot.message_handler(commands=['events'])
-def send_events(message):
-    user_id = message.from_user.id
-    user_tz = get_user_timezone(user_id)
+async def unsubscribe(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Unsubscribe chat from event reminders"""
+    chat_id = update.effective_chat.id
+    
+    try:
+        conn = get_db_connection()
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE event_subscriptions SET subscribed = FALSE WHERE chat_id = %s",
+                (chat_id,)
+            )
+        conn.commit()
+        await update.message.reply_text("❎ You've unsubscribed from event reminders.")
+    except Exception as e:
+        logger.error(f"Unsubscription failed: {str(e)}")
+        await update.message.reply_text("❌ Failed to update subscription. Please try again.")
+    finally:
+        if conn:
+            conn.close()
 
-    events = {
-        "Daily Reset": next_reset_utc(),
-        "Grandma": next_grandma_utc(),
-        "Geyser": next_geyser_utc(),
-        "Turtle": next_turtle_utc()
-    }
+async def set_reminder(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Set a custom event reminder"""
+    try:
+        args = context.args
+        if len(args) < 2:
+            raise ValueError("Insufficient arguments")
+        
+        event_name = " ".join(args[:-1])
+        time_str = args[-1]
+        
+        # Parse time
+        event_time = datetime.strptime(time_str, '%H:%M').time()
+        now = datetime.now(timezone.utc)
+        
+        # Calculate next occurrence
+        next_occurrence = now.replace(
+            hour=event_time.hour,
+            minute=event_time.minute,
+            second=0,
+            microsecond=0
+        )
+        if next_occurrence < now:
+            next_occurrence += timedelta(days=1)
+        
+        # Save to database
+        conn = get_db_connection()
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO reminders (user_id, event_name, event_time, chat_id) "
+                "VALUES (%s, %s, %s, %s)",
+                (update.effective_user.id, event_name, next_occurrence, update.effective_chat.id)
+            )
+        conn.commit()
+        
+        await update.message.reply_text(
+            f"⏰ Reminder set for '{event_name}' at {next_occurrence.strftime('%H:%M')} UTC!"
+        )
+    except (ValueError, IndexError):
+        await update.message.reply_text("Usage: /setreminder [event name] [HH:MM]\nExample: /setremind Geyser 02:00")
+    except Exception as e:
+        logger.error(f"Set reminder failed: {str(e)}")
+        await update.message.reply_text("❌ Failed to set reminder. Please try again.")
+    finally:
+        if conn:
+            conn.close()
 
-    lines = [f"⏰ <b>Event Times (Your timezone: {user_tz})</b>\n"]
-    for name, utc_time in events.items():
-        local_time = to_user_time(utc_time, user_id)
-        emoji = "🕛" if name == "Daily Reset" else "🧓" if name == "Grandma" else "⛲" if name == "Geyser" else "🐢"
-        lines.append(f"{emoji} {name}: <code>{format_time(local_time)}</code>")
+# Background tasks
+async def check_reminders(context: CallbackContext):
+    """Check and send due reminders"""
+    try:
+        conn = get_db_connection()
+        with conn.cursor() as cur:
+            current_time = datetime.now(timezone.utc)
+            
+            # Get due reminders
+            cur.execute(
+                "SELECT id, chat_id, event_name FROM reminders "
+                "WHERE event_time <= %s",
+                (current_time,)
+            )
+            reminders = cur.fetchall()
+            
+            # Send notifications
+            for reminder_id, chat_id, event_name in reminders:
+                try:
+                    await context.bot.send_message(
+                        chat_id=chat_id,
+                        text=f"⏰ **Reminder:** {event_name} is happening NOW!"
+                    )
+                except Exception as e:
+                    logger.warning(f"Failed to send reminder to {chat_id}: {str(e)}")
+                
+                # Delete sent reminder
+                cur.execute(
+                    "DELETE FROM reminders WHERE id = %s",
+                    (reminder_id,)
+                )
+            
+            conn.commit()
+    except Exception as e:
+        logger.error(f"Reminder check failed: {str(e)}")
+    finally:
+        if conn:
+            conn.close()
 
-    bot.send_message(message.chat.id, "\n".join(lines), parse_mode='HTML')
+async def check_sky_events(context: CallbackContext):
+    """Check and notify about active Sky events"""
+    try:
+        conn = get_db_connection()
+        with conn.cursor() as cur:
+            now = datetime.now(timezone.utc)
+            current_hour = now.hour
+            current_minute = now.minute
+            
+            # Get subscribed chats
+            cur.execute("SELECT chat_id FROM event_subscriptions WHERE subscribed = TRUE")
+            subscribed_chats = [row[0] for row in cur.fetchall()]
+            
+            # Check active events
+            for event_name, details in SKY_EVENTS.items():
+                if current_hour in details["times"]:
+                    start_min, end_min = details["duration"]
+                    if start_min <= current_minute < end_min:
+                        # Send to all subscribed chats
+                        for chat_id in subscribed_chats:
+                            try:
+                                await context.bot.send_message(
+                                    chat_id=chat_id,
+                                    text=details["message"],
+                                    parse_mode="Markdown"
+                                )
+                            except Exception as e:
+                                logger.warning(f"Failed to send event to {chat_id}: {str(e)}")
+    except Exception as e:
+        logger.error(f"Event check failed: {str(e)}")
+    finally:
+        if conn:
+            conn.close()
 
-@bot.message_handler(func=lambda message: True)
-def handle_buttons(message):
-    if message.text == "⏰ Wax Events":
-        send_wax(message)
-    elif message.text == "📅 All Events":
-        send_events(message)
-    elif message.text == "🕛 Daily Reset":
-        send_reset(message)
-    else:
-        bot.send_message(message.chat.id, "I don't understand that command. Try /help")
+async def schedule_daily_events(context: CallbackContext):
+    """Schedule next day's events"""
+    try:
+        conn = get_db_connection()
+        with conn.cursor() as cur:
+            now = datetime.now(timezone.utc)
+            tomorrow = now + timedelta(days=1)
+            
+            # Clear old scheduled events
+            cur.execute("DELETE FROM reminders WHERE scheduled = TRUE")
+            
+            # Schedule events for tomorrow
+            for event_name, details in SKY_EVENTS.items():
+                for hour in details["times"]:
+                    event_time = tomorrow.replace(
+                        hour=hour,
+                        minute=0,
+                        second=0,
+                        microsecond=0
+                    )
+                    
+                    # Create reminder 5 minutes before event
+                    reminder_time = event_time - timedelta(minutes=5)
+                    
+                    # Save to database
+                    cur.execute(
+                        "INSERT INTO reminders (event_name, event_time, chat_id, user_id, scheduled) "
+                        "VALUES (%s, %s, %s, %s, TRUE)",
+                        (f"{event_name} Reminder", reminder_time, 0, 0)
+                    )
+            
+            conn.commit()
+            logger.info("Scheduled next day's events")
+    except Exception as e:
+        logger.error(f"Daily scheduling failed: {str(e)}")
+    finally:
+        if conn:
+            conn.close()
 
-# Start Flask server
-if __name__ == '__main__':
-    WEBHOOK_URL = f"{os.environ.get('RENDER_EXTERNAL_URL') or 'https://skyclock-bot.onrender.com'}/webhook"
-    bot.remove_webhook()
-    bot.set_webhook(url=WEBHOOK_URL)
-    print(f"✅ Webhook set to: {WEBHOOK_URL}")
-    app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 10000)))
+def main() -> None:
+    """Start the bot"""
+    # Initialize database
+    init_db()
+    
+    # Create Telegram application
+    token = os.getenv("TELEGRAM_TOKEN")
+    if not token:
+        raise ValueError("TELEGRAM_TOKEN environment variable not set")
+    
+    application = Application.builder().token(token).build()
+    
+    # Register commands
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("help", start))
+    application.add_handler(CommandHandler("events", list_events))
+    application.add_handler(CommandHandler("subscribe", subscribe))
+    application.add_handler(CommandHandler("unsubscribe", unsubscribe))
+    application.add_handler(CommandHandler("setreminder", set_reminder))
+    
+    # Schedule background jobs
+    job_queue = application.job_queue
+    
+    # Check reminders every minute
+    job_queue.run_repeating(
+        callback=check_reminders,
+        interval=60,
+        first=10
+    )
+    
+    # Check Sky events every minute
+    job_queue.run_repeating(
+        callback=check_sky_events,
+        interval=60,
+        first=15
+    )
+    
+    # Schedule daily events at 23:50 UTC
+    job_queue.run_daily(
+        callback=schedule_daily_events,
+        time=time(hour=23, minute=50, tzinfo=timezone.utc),
+        days=(0, 1, 2, 3, 4, 5, 6)
+    )
+    
+    # Start the bot
+    application.run_polling()
+
+if __name__ == "__main__":
+    main()
