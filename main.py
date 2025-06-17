@@ -101,12 +101,14 @@ def create_user(user_id, chat_id):
             cur.execute(
                 "INSERT INTO users (user_id, chat_id) VALUES (%s, %s) ON CONFLICT (user_id) DO NOTHING",
                 (user_id, chat_id)
+            )  # <-- FIXED: closed the function call
             conn.commit()
     except Exception as e:
         logger.error(f"Error creating user: {str(e)}")
     finally:
         if conn:
             conn.close()
+
 
 def update_user_timezone(user_id, timezone):
     """Update user's timezone"""
