@@ -55,8 +55,6 @@ def next_reset_utc():
 
 def next_grandma_utc():
     now = datetime.utcnow()
-    # Grandma: UTC+6:30 even hours + 5 min → UTC = (even hours - 6:30) + 5 min
-    # = even hours - 6:25 → odd hours + 35 min
     base_hour = now.hour - (now.hour % 2)  # Previous even hour
     candidates = [
         now.replace(hour=base_hour, minute=35, second=0, microsecond=0),
@@ -66,8 +64,6 @@ def next_grandma_utc():
 
 def next_geyser_utc():
     now = datetime.utcnow()
-    # Geyser: UTC+6:30 odd hours + 35 min → UTC = (odd hours - 6:30) + 35 min
-    # = odd hours - 5:55 → even hours + 5 min
     base_hour = (now.hour + 1) % 24  # Next odd hour
     if base_hour % 2 == 0:
         base_hour = (base_hour + 1) % 24
@@ -83,8 +79,6 @@ def next_geyser_utc():
 
 def next_turtle_utc():
     now = datetime.utcnow()
-    # Turtle: UTC+6:30 even hours + 20 min → UTC = (even hours - 6:30) + 20 min
-    # = even hours - 6:10 → even hours + 50 min
     base_hour = now.hour - (now.hour % 2)  # Previous even hour
     candidates = [
         now.replace(hour=base_hour, minute=50, second=0, microsecond=0),
@@ -116,14 +110,14 @@ Track Sky: Children of the Light events!
 
 */wax* - Show next wax events
 */events* - All upcoming events
-*/settimezone <zone>* - Set your timezone (e.g. /settimezone Asia/Tokyo)
+*/settimezone <zone>* - Set your timezone (e\.g\. /settimezone Asia/Tokyo)
 */timezone* - Show current timezone
 */reset* - Next daily reset time
 
-*Timezones must be valid* (e.g. America/New_York, Europe/London). 
-See full list: https://gist.github.com/heyalexej/8bf688fd67d7199be4a1682b3eec7568
+*Timezones must be valid* \(e\.g\. America/New\_York, Europe/London\)\. 
+See full list: [Timezones](https://gist.github.com/heyalexej/8bf688fd67d7199be4a1682b3eec7568)
     """
-    bot.reply_to(message, help_text, parse_mode='Markdown')
+    bot.reply_to(message, help_text, parse_mode='Markdown', disable_web_page_preview=True)
 
 @bot.message_handler(commands=['settimezone'])
 def set_timezone(message):
@@ -212,12 +206,11 @@ def send_events(message):
     
     # Format response
     response = (
-        f"⏰ *Event Times ({user_tz})*\n\n"
+        f"⏰ *Event Times \(in your time: {user_tz}\)*\n\n"
         f"🕛 Daily Reset: `{format_time(reset_user)}`\n"
         f"🧓 Grandma: `{format_time(grandma_user)}`\n"
         f"⛲ Geyser: `{format_time(geyser_user)}`\n"
-        f"🐢 Turtle: `{format_time(turtle_user)}`\n\n"
-        "_Times shown in your local timezone_"
+        f"🐢 Turtle: `{format_time(turtle_user)}`"
     )
     bot.reply_to(message, response, parse_mode='Markdown')
 
