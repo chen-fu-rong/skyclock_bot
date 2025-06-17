@@ -1,17 +1,16 @@
 import os
 import telebot
-import flask  # ← THIS LINE IS MANDATORY
+import flask
 from flask import Flask, request
 from datetime import datetime, timedelta
 import pytz
 import psycopg2
 
-
 # Initialize bot
 BOT_TOKEN = os.environ.get('BOT_TOKEN')
 bot = telebot.TeleBot(BOT_TOKEN)
 
-# Create a simple HTTP server for Render
+# Flask app
 app = Flask(__name__)
 
 @app.route('/')
@@ -20,25 +19,19 @@ def home():
 
 @app.route('/webhook', methods=['POST'])
 def webhook():
-    if flask.request.headers.get('content-type') == 'application/json':
-        json_string = flask.request.get_data().decode('utf-8')
+    if request.headers.get('content-type') == 'application/json':
+        json_string = request.get_data().decode('utf-8')
         update = telebot.types.Update.de_json(json_string)
         bot.process_new_updates([update])
         return '', 200
     else:
-        flask.abort(403)
+        return 'Unsupported Media Type', 415
 
-
-def run_flask_app():
-    port = int(os.environ.get('PORT', 5000))
-    app.run(host='0.0.0.0', port=port)
-
-# Database connection
+# Database setup
 DATABASE_URL = os.environ.get('DATABASE_URL')
 conn = psycopg2.connect(DATABASE_URL, sslmode='require')
 cursor = conn.cursor()
 
-# Create tables with timezone support
 cursor.execute('''
 CREATE TABLE IF NOT EXISTS users (
     user_id BIGINT PRIMARY KEY,
@@ -48,11 +41,10 @@ CREATE TABLE IF NOT EXISTS users (
 ''')
 conn.commit()
 
-# Timezone Validation
-def is_valid_timezone(timezone_str):
-    return timezone_str in pytz.all_timezones
+# Helper functions
+def is_valid_timezone(tz):
+    return tz in pytz.all_timezones
 
-# User Management
 def get_user_timezone(user_id):
     cursor.execute("SELECT timezone FROM users WHERE user_id = %s", (user_id,))
     result = cursor.fetchone()
@@ -62,12 +54,10 @@ def set_user_timezone(user_id, timezone_str):
     cursor.execute('''
     INSERT INTO users (user_id, timezone) 
     VALUES (%s, %s)
-    ON CONFLICT (user_id) 
-    DO UPDATE SET timezone = EXCLUDED.timezone
+    ON CONFLICT (user_id) DO UPDATE SET timezone = EXCLUDED.timezone
     ''', (user_id, timezone_str))
     conn.commit()
 
-# Event Calculations (always in UTC)
 def next_reset_utc():
     now = datetime.utcnow()
     return (now + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
@@ -100,13 +90,10 @@ def next_turtle_utc():
             return candidate
     return now.replace(hour=0, minute=50) + timedelta(days=1)
 
-# Timezone Conversion
 def to_user_time(utc_dt, user_id):
     user_tz = get_user_timezone(user_id)
-    localized = pytz.utc.localize(utc_dt)
-    return localized.astimezone(pytz.timezone(user_tz))
+    return pytz.utc.localize(utc_dt).astimezone(pytz.timezone(user_tz))
 
-# Formatting Functions
 def format_time(dt):
     return dt.strftime("%Y-%m-%d %H:%M")
 
@@ -116,7 +103,7 @@ def format_timedelta(td):
     minutes = (total_seconds % 3600) // 60
     return f"{hours}h {minutes}m"
 
-# Bot Commands
+# Handlers
 @bot.message_handler(commands=['start', 'help'])
 def send_welcome(message):
     help_text = """
@@ -131,26 +118,26 @@ Track Sky: Children of the Light events!
 /reset - Next daily reset time
 
 <b>Timezones</b> must be valid (e.g. America/New_York, Europe/London). 
-See full list: <a href=\"https://gist.github.com/heyalexej/8bf688fd67d7199be4a1682b3eec7568\">Timezones</a>
+See full list: <a href="https://gist.github.com/heyalexej/8bf688fd67d7199be4a1682b3eec7568">Timezones</a>
     """
-    bot.reply_to(message, help_text, parse_mode='HTML', disable_web_page_preview=True)
+    bot.send_message(message.chat.id, help_text, parse_mode='HTML', disable_web_page_preview=True)
 
 @bot.message_handler(commands=['settimezone'])
 def set_timezone(message):
     try:
         timezone_str = message.text.split()[1]
         if not is_valid_timezone(timezone_str):
-            bot.reply_to(message, "❌ Invalid timezone! Use format like 'Asia/Tokyo' or 'America/New_York'")
+            bot.send_message(message.chat.id, "❌ Invalid timezone! Use format like 'Asia/Tokyo'")
             return
         set_user_timezone(message.from_user.id, timezone_str)
-        bot.reply_to(message, f"✅ Timezone set to {timezone_str}")
+        bot.send_message(message.chat.id, f"✅ Timezone set to {timezone_str}")
     except IndexError:
-        bot.reply_to(message, "❌ Please specify a timezone. Example: /settimezone Asia/Tokyo")
+        bot.send_message(message.chat.id, "❌ Please specify a timezone. Example: /settimezone Asia/Tokyo")
 
 @bot.message_handler(commands=['timezone'])
 def show_timezone(message):
     user_tz = get_user_timezone(message.from_user.id)
-    bot.reply_to(message, f"⏱️ Your current timezone: {user_tz}")
+    bot.send_message(message.chat.id, f"⏱️ Your current timezone: {user_tz}")
 
 @bot.message_handler(commands=['reset'])
 def send_reset(message):
@@ -163,7 +150,7 @@ def send_reset(message):
         f"• UTC: <code>{format_time(reset_utc)}</code>\n"
         f"• Time left: <code>{format_timedelta(time_left)}</code>"
     )
-    bot.reply_to(message, response, parse_mode='HTML')
+    bot.send_message(message.chat.id, response, parse_mode='HTML')
 
 @bot.message_handler(commands=['wax'])
 def send_wax(message):
@@ -186,7 +173,7 @@ def send_wax(message):
         lines.append(f"• UTC: <code>{format_time(utc_time)}</code>")
         lines.append(f"• In: <code>{format_timedelta(time_left)}</code>\n")
 
-    bot.reply_to(message, "\n".join(lines), parse_mode='HTML')
+    bot.send_message(message.chat.id, "\n".join(lines), parse_mode='HTML')
 
 @bot.message_handler(commands=['events'])
 def send_events(message):
@@ -206,9 +193,8 @@ def send_events(message):
         emoji = "🕛" if name == "Daily Reset" else "🧓" if name == "Grandma" else "⛲" if name == "Geyser" else "🐢"
         lines.append(f"{emoji} {name}: <code>{format_time(local_time)}</code>")
 
-    bot.reply_to(message, "\n".join(lines), parse_mode='HTML')
+    bot.send_message(message.chat.id, "\n".join(lines), parse_mode='HTML')
 
-# Inline Buttons
 @bot.message_handler(func=lambda message: True)
 def handle_buttons(message):
     if message.text == "⏰ Wax Events":
@@ -218,18 +204,12 @@ def handle_buttons(message):
     elif message.text == "🕛 Daily Reset":
         send_reset(message)
     else:
-        bot.reply_to(message, "I don't understand that command. Try /help")
+        bot.send_message(message.chat.id, "I don't understand that command. Try /help")
 
-# Main loop
+# Start Flask server
 if __name__ == '__main__':
-    import threading
-
-    # Set webhook to your Render URL
     WEBHOOK_URL = f"{os.environ.get('RENDER_EXTERNAL_URL') or 'https://skyclock-bot.onrender.com'}/webhook"
     bot.remove_webhook()
     bot.set_webhook(url=WEBHOOK_URL)
-
-    # Run Flask app
-    print(f"Webhook set to: {WEBHOOK_URL}")
-    run_flask_app()
-
+    print(f"✅ Webhook set to: {WEBHOOK_URL}")
+    app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 10000)))
