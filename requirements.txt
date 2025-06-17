@@ -1,15 +1,12 @@
 python-telegram-bot[webhooks]==20.3
 python-dotenv==1.0.0
-psycopg2-binary==2.9.9
-httpx~=0.24.0
+httpx
 uvicorn[standard]==0.29.0
 apscheduler==3.10.4
-pytz==2023.3
+pytz
 fastapi
 psycopg_pool
 psycopg
 telebot
 flask
-discord.py
 psycopg2-binary
-python-dotenv

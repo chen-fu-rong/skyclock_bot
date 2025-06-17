@@ -60,11 +60,12 @@ def init_db():
                 );
             ''')
             
-            # Events table
+            # Events table - ADDED chat_id COLUMN HERE
             cur.execute('''
                 CREATE TABLE IF NOT EXISTS events (
                     id SERIAL PRIMARY KEY,
                     user_id BIGINT NOT NULL,
+                    chat_id BIGINT NOT NULL,  -- ADDED THIS LINE
                     event_type VARCHAR(20) NOT NULL,
                     notify_minutes INT NOT NULL,
                     is_active BOOLEAN DEFAULT TRUE,
@@ -162,15 +163,15 @@ def get_user_events(user_id):
         if conn:
             conn.close()
 
-def create_event(user_id, event_type, notify_minutes):
+def create_event(user_id, chat_id, event_type, notify_minutes):  # ADDED chat_id PARAMETER
     """Create a new event notification"""
     conn = None
     try:
         conn = get_db_connection()
         with conn.cursor() as cur:
             cur.execute(
-                "INSERT INTO events (user_id, event_type, notify_minutes) VALUES (%s, %s, %s)",
-                (user_id, event_type, notify_minutes)
+                "INSERT INTO events (user_id, chat_id, event_type, notify_minutes) VALUES (%s, %s, %s, %s)",
+                (user_id, chat_id, event_type, notify_minutes)  # ADDED chat_id HERE
             )
         conn.commit()
     except Exception as e:
@@ -511,6 +512,7 @@ async def handle_notification_request(update: Update, context: ContextTypes.DEFA
 async def handle_notification_minutes(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle notification minutes input"""
     user_id = update.message.from_user.id
+    chat_id = update.message.chat.id  # ADDED CHAT ID
     text = update.message.text.strip()
     
     try:
@@ -520,8 +522,8 @@ async def handle_notification_minutes(update: Update, context: ContextTypes.DEFA
         
         event_type = context.user_data.get('event_type', 'Grandma')
         
-        # Create event notification
-        create_event(user_id, event_type.lower(), minutes)
+        # Create event notification - PASS CHAT ID
+        create_event(user_id, chat_id, event_type.lower(), minutes)
         
         await update.message.reply_text(
             f"✅ Notification set! You'll be notified {minutes} minutes before the {event_type} event."
@@ -672,11 +674,10 @@ async def check_reminders(context: ContextTypes.DEFAULT_TYPE):
         with conn.cursor() as cur:
             current_time = datetime.now(pytz.utc)
             
-            # Get active reminders
+            # Get active reminders - FIXED QUERY TO USE chat_id FROM EVENTS TABLE
             cur.execute('''
-                SELECT e.id, e.user_id, e.event_type, e.notify_minutes, u.chat_id 
+                SELECT e.id, e.user_id, e.event_type, e.notify_minutes, e.chat_id 
                 FROM events e
-                JOIN users u ON e.user_id = u.user_id
                 WHERE e.is_active = TRUE
             ''')
             events = cur.fetchall()
@@ -731,6 +732,10 @@ def main() -> None:
     if not token:
         raise ValueError("TELEGRAM_TOKEN environment variable not set")
     
+    # Get Render environment details
+    render_external_url = os.getenv('RENDER_EXTERNAL_URL')
+    port = os.getenv('PORT', '8443')
+    
     application = Application.builder().token(token).build()
     
     # Conversation handler for timezone setup
@@ -763,8 +768,21 @@ def main() -> None:
     job_queue = application.job_queue
     job_queue.run_repeating(check_reminders, interval=60, first=10)
     
-    # Start the bot
-    application.run_polling()
+    # Handle Render deployment
+    if render_external_url:
+        # Running on Render - use webhook
+        webhook_url = f'{render_external_url}/{token}'
+        application.run_webhook(
+            listen="0.0.0.0",
+            port=int(port),
+            url_path=token,
+            webhook_url=webhook_url
+        )
+        logger.info(f"Using webhook: {webhook_url}")
+    else:
+        # Running locally - use polling
+        application.run_polling(drop_pending_updates=True)
+        logger.info("Using polling method")
 
 if __name__ == "__main__":
     main()
