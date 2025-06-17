@@ -25,13 +25,299 @@ logger = logging.getLogger(__name__)
 # Conversation states
 TIMEZONE, EVENT_NOTIFICATION, TIME_FORMAT = range(3)
 
-# ... [Database functions - same as before] ...
+# ===================== Database Functions =====================
+def get_db_connection():
+    """Create and return a PostgreSQL database connection"""
+    database_url = os.getenv('DATABASE_URL')
+    if not database_url:
+        raise ValueError("DATABASE_URL environment variable not set")
+    
+    result = urllib.parse.urlparse(database_url)
+    conn = psycopg2.connect(
+        dbname=result.path[1:],
+        user=result.username,
+        password=result.password,
+        host=result.hostname,
+        port=result.port,
+        sslmode='require'
+    )
+    return conn
 
-# ... [Time functions - same as before] ...
+def init_db():
+    """Initialize database tables and perform migrations"""
+    conn = None
+    try:
+        conn = get_db_connection()
+        with conn.cursor() as cur:
+            # Create users table
+            cur.execute('''
+                CREATE TABLE IF NOT EXISTS users (
+                    user_id BIGINT PRIMARY KEY,
+                    chat_id BIGINT NOT NULL,
+                    timezone VARCHAR(50) DEFAULT 'Asia/Yangon',
+                    time_format VARCHAR(5) DEFAULT '24h',
+                    created_at TIMESTAMPTZ DEFAULT NOW()
+                );
+            ''')
+            
+            # Create events table with all columns
+            cur.execute('''
+                CREATE TABLE IF NOT EXISTS events (
+                    id SERIAL PRIMARY KEY,
+                    user_id BIGINT NOT NULL,
+                    chat_id BIGINT NOT NULL,
+                    event_type VARCHAR(20) NOT NULL,
+                    notify_minutes INT NOT NULL,
+                    is_active BOOLEAN DEFAULT TRUE,
+                    created_at TIMESTAMPTZ DEFAULT NOW(),
+                    FOREIGN KEY (user_id) REFERENCES users (user_id)
+                );
+            ''')
+            
+            # Add chat_id column if it doesn't exist (migration)
+            cur.execute("""
+                DO $$
+                BEGIN
+                    IF NOT EXISTS (
+                        SELECT 1 
+                        FROM information_schema.columns 
+                        WHERE table_name='events' AND column_name='chat_id'
+                    ) THEN
+                        ALTER TABLE events ADD COLUMN chat_id BIGINT;
+                    END IF;
+                END$$;
+            """)
+            
+            # Set default value for existing rows
+            cur.execute("UPDATE events SET chat_id = 0 WHERE chat_id IS NULL;")
+            cur.execute("ALTER TABLE events ALTER COLUMN chat_id SET NOT NULL;")
+            
+        conn.commit()
+        logger.info("Database initialized successfully")
+    except Exception as e:
+        logger.error(f"Database initialization failed: {str(e)}")
+    finally:
+        if conn:
+            conn.close()
 
-# ... [Event calculations - same as before] ...
+def get_user(user_id):
+    """Get user from database"""
+    conn = None
+    try:
+        conn = get_db_connection()
+        with conn.cursor() as cur:
+            cur.execute("SELECT * FROM users WHERE user_id = %s", (user_id,))
+            user = cur.fetchone()
+            return user
+    except Exception as e:
+        logger.error(f"Error getting user: {str(e)}")
+        return None
+    finally:
+        if conn:
+            conn.close()
 
-# Bot command handlers - MOVED ABOVE THE main() FUNCTION
+def create_user(user_id, chat_id):
+    """Create a new user in database"""
+    conn = None
+    try:
+        conn = get_db_connection()
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO users (user_id, chat_id) VALUES (%s, %s) ON CONFLICT (user_id) DO NOTHING",
+                (user_id, chat_id)
+            )
+        conn.commit()
+    except Exception as e:
+        logger.error(f"Error creating user: {str(e)}")
+    finally:
+        if conn:
+            conn.close()
+
+def update_user_timezone(user_id, timezone):
+    """Update user's timezone"""
+    conn = None
+    try:
+        conn = get_db_connection()
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE users SET timezone = %s WHERE user_id = %s",
+                (timezone, user_id)
+            )
+        conn.commit()
+    except Exception as e:
+        logger.error(f"Error updating timezone: {str(e)}")
+    finally:
+        if conn:
+            conn.close()
+
+def update_user_time_format(user_id, time_format):
+    """Update user's time format"""
+    conn = None
+    try:
+        conn = get_db_connection()
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE users SET time_format = %s WHERE user_id = %s",
+                (time_format, user_id)
+            )
+        conn.commit()
+    except Exception as e:
+        logger.error(f"Error updating time format: {str(e)}")
+    finally:
+        if conn:
+            conn.close()
+
+def get_user_events(user_id):
+    """Get user's event notifications"""
+    conn = None
+    try:
+        conn = get_db_connection()
+        with conn.cursor() as cur:
+            cur.execute("SELECT * FROM events WHERE user_id = %s", (user_id,))
+            return cur.fetchall()
+    except Exception as e:
+        logger.error(f"Error getting events: {str(e)}")
+        return []
+    finally:
+        if conn:
+            conn.close()
+
+def create_event(user_id, chat_id, event_type, notify_minutes):
+    """Create a new event notification"""
+    conn = None
+    try:
+        conn = get_db_connection()
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO events (user_id, chat_id, event_type, notify_minutes) VALUES (%s, %s, %s, %s)",
+                (user_id, chat_id, event_type, notify_minutes)
+            )
+        conn.commit()
+    except Exception as e:
+        logger.error(f"Error creating event: {str(e)}")
+    finally:
+        if conn:
+            conn.close()
+
+def toggle_event(event_id, is_active):
+    """Toggle event notification status"""
+    conn = None
+    try:
+        conn = get_db_connection()
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE events SET is_active = %s WHERE id = %s",
+                (is_active, event_id)
+            )
+        conn.commit()
+    except Exception as e:
+        logger.error(f"Error toggling event: {str(e)}")
+    finally:
+        if conn:
+            conn.close()
+
+# ===================== Time Functions =====================
+def get_sky_time():
+    """Get current time in Sky Time (America/Los_Angeles)"""
+    return datetime.now(pytz.timezone('America/Los_Angeles'))
+
+def convert_to_user_time(dt, user_timezone):
+    """Convert datetime to user's timezone"""
+    try:
+        user_tz = pytz.timezone(user_timezone)
+        return dt.astimezone(user_tz)
+    except pytz.UnknownTimeZoneError:
+        return dt
+
+def format_time(dt, time_format):
+    """Format time based on user preference"""
+    if time_format == '12h':
+        return dt.strftime("%I:%M %p")
+    return dt.strftime("%H:%M")
+
+# ===================== Event Calculations =====================
+def calculate_grandma_time(user_time):
+    """Calculate next grandma event time in user's local time"""
+    # Grandma = even hours + 5 mins in user's local time
+    base_hour = user_time.hour
+    if base_hour % 2 != 0:  # If current hour is odd, next is next even hour
+        next_hour = base_hour + 1
+    else:  # Current hour is even
+        if user_time.minute < 5:
+            next_hour = base_hour
+        else:
+            next_hour = base_hour + 2
+    
+    # Handle hour overflow
+    if next_hour >= 24:
+        next_hour -= 24
+        next_day = user_time.date() + timedelta(days=1)
+    else:
+        next_day = user_time.date()
+    
+    event_time = datetime.combine(next_day, time(hour=next_hour, minute=5))
+    return pytz.timezone('UTC').localize(event_time)
+
+def calculate_geyser_time(user_time):
+    """Calculate next geyser event time in user's local time"""
+    # Geyser = odd hours + 35 mins in user's local time
+    base_hour = user_time.hour
+    if base_hour % 2 == 0:  # If current hour is even, next is next odd hour
+        next_hour = base_hour + 1
+    else:  # Current hour is odd
+        if user_time.minute < 35:
+            next_hour = base_hour
+        else:
+            next_hour = base_hour + 2
+    
+    # Handle hour overflow
+    if next_hour >= 24:
+        next_hour -= 24
+        next_day = user_time.date() + timedelta(days=1)
+    else:
+        next_day = user_time.date()
+    
+    event_time = datetime.combine(next_day, time(hour=next_hour, minute=35))
+    return pytz.timezone('UTC').localize(event_time)
+
+def calculate_turtle_time(user_time):
+    """Calculate next turtle event time in user's local time"""
+    # Turtle = even hours + 20 mins in user's local time
+    base_hour = user_time.hour
+    if base_hour % 2 != 0:  # If current hour is odd, next is next even hour
+        next_hour = base_hour + 1
+    else:  # Current hour is even
+        if user_time.minute < 20:
+            next_hour = base_hour
+        else:
+            next_hour = base_hour + 2
+    
+    # Handle hour overflow
+    if next_hour >= 24:
+        next_hour -= 24
+        next_day = user_time.date() + timedelta(days=1)
+    else:
+        next_day = user_time.date()
+    
+    event_time = datetime.combine(next_day, time(hour=next_hour, minute=20))
+    return pytz.timezone('UTC').localize(event_time)
+
+def format_time_difference(event_time, current_time):
+    """Format time difference in human-readable format"""
+    diff = event_time - current_time
+    total_seconds = diff.total_seconds()
+    
+    if total_seconds < 0:
+        return "now"
+    
+    hours, remainder = divmod(total_seconds, 3600)
+    minutes = remainder // 60
+    
+    if hours > 0:
+        return f"{int(hours)}h {int(minutes)}m"
+    return f"{int(minutes)}m"
+
+# ===================== Bot Command Handlers =====================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Start command with timezone setup"""
     user = update.effective_user
@@ -399,7 +685,7 @@ async def show_shards_info(query):
         reply_markup=reply_markup
     )
 
-# Background tasks
+# ===================== Background Tasks =====================
 async def check_reminders(context: ContextTypes.DEFAULT_TYPE):
     """Check and send due reminders"""
     try:
@@ -455,6 +741,7 @@ async def check_reminders(context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         logger.error(f"Reminder check failed: {str(e)}")
 
+# ===================== Main Application =====================
 def main() -> None:
     """Start the bot"""
     # Initialize database
