@@ -5,10 +5,22 @@ import psycopg2
 from datetime import datetime, timedelta
 import pytz
 import time
+from flask import Flask
 
 # Initialize bot
 BOT_TOKEN = os.environ.get('BOT_TOKEN')
 bot = telebot.TeleBot(BOT_TOKEN)
+
+# Create a simple HTTP server for Render
+app = Flask(__name__)
+
+@app.route('/')
+def home():
+    return "Bot is running", 200
+
+def run_flask_app():
+    port = int(os.environ.get('PORT', 5000))
+    app.run(host='0.0.0.0', port=port)
 
 # Database connection
 DATABASE_URL = os.environ.get('DATABASE_URL')
@@ -72,9 +84,9 @@ def next_geyser_utc():
         now.replace(hour=(base_hour + 2) % 24, minute=5, second=0, microsecond=0)
     ]
     # Handle day wrap
-    for t in candidates:
-        if t < now:
-            t += timedelta(days=1)
+    for i in range(len(candidates)):
+        if candidates[i] < now:
+            candidates[i] += timedelta(days=1)
     return min(t for t in candidates if t > now)
 
 def next_turtle_utc():
@@ -101,23 +113,24 @@ def format_timedelta(td):
     minutes = remainder // 60
     return f"{hours}h {minutes}m"
 
-# Bot Commands
+# Bot Commands - Using HTML formatting to avoid Markdown issues
 @bot.message_handler(commands=['start', 'help'])
 def send_welcome(message):
     help_text = """
-🕰️ *Sky Clock Bot* 🕰️
+🕰️ <b>Sky Clock Bot</b> 🕰️
 Track Sky: Children of the Light events!
 
-*/wax* - Show next wax events
-*/events* - All upcoming events
-*/settimezone <zone>* - Set your timezone (e\.g\. /settimezone Asia/Tokyo)
-*/timezone* - Show current timezone
-*/reset* - Next daily reset time
+<b>Commands:</b>
+/wax - Show next wax events
+/events - All upcoming events
+/settimezone &lt;zone&gt; - Set your timezone (e.g. /settimezone Asia/Tokyo)
+/timezone - Show current timezone
+/reset - Next daily reset time
 
-*Timezones must be valid* \(e\.g\. America/New\_York, Europe/London\)\. 
-See full list: [Timezones](https://gist.github.com/heyalexej/8bf688fd67d7199be4a1682b3eec7568)
+<b>Timezones</b> must be valid (e.g. America/New_York, Europe/London). 
+See full list: <a href="https://gist.github.com/heyalexej/8bf688fd67d7199be4a1682b3eec7568">Timezones</a>
     """
-    bot.reply_to(message, help_text, parse_mode='Markdown', disable_web_page_preview=True)
+    bot.reply_to(message, help_text, parse_mode='HTML', disable_web_page_preview=True)
 
 @bot.message_handler(commands=['settimezone'])
 def set_timezone(message):
@@ -144,12 +157,12 @@ def send_reset(message):
     
     time_left = reset_utc - datetime.utcnow()
     response = (
-        f"🕛 *Next Daily Reset*\n"
-        f"• Your time: `{format_time(user_time)}`\n"
-        f"• UTC: `{format_time(reset_utc)}`\n"
-        f"• Time left: `{format_timedelta(time_left)}`"
+        f"🕛 <b>Next Daily Reset</b>\n"
+        f"• Your time: <code>{format_time(user_time)}</code>\n"
+        f"• UTC: <code>{format_time(reset_utc)}</code>\n"
+        f"• Time left: <code>{format_timedelta(time_left)}</code>"
     )
-    bot.reply_to(message, response, parse_mode='Markdown')
+    bot.reply_to(message, response, parse_mode='HTML')
 
 @bot.message_handler(commands=['wax'])
 def send_wax(message):
@@ -172,21 +185,21 @@ def send_wax(message):
     
     # Format response
     response = (
-        "🕯️ *Next Wax Events*\n\n"
-        f"🧓 *Grandma*\n"
-        f"• Your time: `{format_time(grandma_user)}`\n"
-        f"• UTC: `{format_time(grandma_utc)}`\n"
-        f"• In: `{format_timedelta(grandma_delta)}`\n\n"
-        f"⛲ *Geyser*\n"
-        f"• Your time: `{format_time(geyser_user)}`\n"
-        f"• UTC: `{format_time(geyser_utc)}`\n"
-        f"• In: `{format_timedelta(geyser_delta)}`\n\n"
-        f"🐢 *Turtle*\n"
-        f"• Your time: `{format_time(turtle_user)}`\n"
-        f"• UTC: `{format_time(turtle_utc)}`\n"
-        f"• In: `{format_timedelta(turtle_delta)}`"
+        "🕯️ <b>Next Wax Events</b>\n\n"
+        f"🧓 <b>Grandma</b>\n"
+        f"• Your time: <code>{format_time(grandma_user)}</code>\n"
+        f"• UTC: <code>{format_time(grandma_utc)}</code>\n"
+        f"• In: <code>{format_timedelta(grandma_delta)}</code>\n\n"
+        f"⛲ <b>Geyser</b>\n"
+        f"• Your time: <code>{format_time(geyser_user)}</code>\n"
+        f"• UTC: <code>{format_time(geyser_utc)}</code>\n"
+        f"• In: <code>{format_timedelta(geyser_delta)}</code>\n\n"
+        f"🐢 <b>Turtle</b>\n"
+        f"• Your time: <code>{format_time(turtle_user)}</code>\n"
+        f"• UTC: <code>{format_time(turtle_utc)}</code>\n"
+        f"• In: <code>{format_timedelta(turtle_delta)}</code>"
     )
-    bot.reply_to(message, response, parse_mode='Markdown')
+    bot.reply_to(message, response, parse_mode='HTML')
 
 @bot.message_handler(commands=['events'])
 def send_events(message):
@@ -206,13 +219,13 @@ def send_events(message):
     
     # Format response
     response = (
-        f"⏰ *Event Times \(in your time: {user_tz}\)*\n\n"
-        f"🕛 Daily Reset: `{format_time(reset_user)}`\n"
-        f"🧓 Grandma: `{format_time(grandma_user)}`\n"
-        f"⛲ Geyser: `{format_time(geyser_user)}`\n"
-        f"🐢 Turtle: `{format_time(turtle_user)}`"
+        f"⏰ <b>Event Times (in your time: {user_tz})</b>\n\n"
+        f"🕛 Daily Reset: <code>{format_time(reset_user)}</code>\n"
+        f"🧓 Grandma: <code>{format_time(grandma_user)}</code>\n"
+        f"⛲ Geyser: <code>{format_time(geyser_user)}</code>\n"
+        f"🐢 Turtle: <code>{format_time(turtle_user)}</code>"
     )
-    bot.reply_to(message, response, parse_mode='Markdown')
+    bot.reply_to(message, response, parse_mode='HTML')
 
 # Inline Buttons
 @bot.message_handler(func=lambda message: True)
@@ -228,6 +241,13 @@ def handle_buttons(message):
 
 # Main loop
 if __name__ == '__main__':
+    # Remove any existing webhook to prevent conflicts
+    bot.remove_webhook()
+    
+    # Start Flask app in a separate thread
+    from threading import Thread
+    Thread(target=run_flask_app).start()
+    
     print("Bot running...")
     while True:
         try:
