@@ -3,6 +3,7 @@ import logging
 import pytz
 import psycopg2
 import urllib.parse
+import re
 from datetime import datetime, time, timedelta
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
@@ -24,6 +25,47 @@ logger = logging.getLogger(__name__)
 
 # Conversation states
 TIMEZONE, EVENT_NOTIFICATION, TIME_FORMAT = range(3)
+
+# ===================== Timezone Helper Functions =====================
+def get_iana_timezone(offset_str):
+    """Convert offset string to IANA timezone if possible"""
+    offset_map = {
+        '+06:30': 'Asia/Yangon',    # Myanmar Time
+        '+08:00': 'Asia/Singapore', # Singapore, Malaysia
+        '+07:00': 'Asia/Bangkok',   # Thailand, Vietnam
+        '+09:00': 'Asia/Tokyo',     # Japan
+        '+05:30': 'Asia/Kolkata',   # India
+        '+00:00': 'UTC',
+        '+01:00': 'Europe/Paris',
+        '+02:00': 'Africa/Cairo',
+        '+03:00': 'Europe/Moscow',
+        '+04:00': 'Asia/Dubai',
+        '+10:00': 'Australia/Sydney',
+        '+11:00': 'Pacific/Guadalcanal',
+        '+12:00': 'Pacific/Auckland',
+        '-03:00': 'America/Argentina/Buenos_Aires',
+        '-04:00': 'America/Caracas',
+        '-05:00': 'America/New_York',
+        '-06:00': 'America/Chicago',
+        '-07:00': 'America/Denver',
+        '-08:00': 'America/Los_Angeles',
+        '-09:00': 'America/Anchorage',
+        '-10:00': 'Pacific/Honolulu',
+    }
+    return offset_map.get(offset_str, 'UTC')
+
+def safe_get_timezone(tz_string):
+    """Safely get timezone object with fallback to UTC"""
+    try:
+        # If it's an offset string, convert to IANA
+        if re.match(r'^[+-]\d{2}:\d{2}$', tz_string):
+            iana_name = get_iana_timezone(tz_string)
+            return pytz.timezone(iana_name)
+        # Otherwise try directly
+        return pytz.timezone(tz_string)
+    except pytz.UnknownTimeZoneError:
+        logger.error(f"Unknown timezone: {tz_string}, defaulting to UTC")
+        return pytz.UTC
 
 # ===================== Database Functions =====================
 def get_db_connection():
@@ -74,7 +116,7 @@ def init_db():
                 );
             ''')
             
-            # Add chat_id column if it doesn't exist (migration)
+            # Migration: Add chat_id column if it doesn't exist
             cur.execute("""
                 DO $$
                 BEGIN
@@ -101,13 +143,28 @@ def init_db():
             conn.close()
 
 def get_user(user_id):
-    """Get user from database"""
+    """Get user from database and fix invalid timezones"""
     conn = None
     try:
         conn = get_db_connection()
         with conn.cursor() as cur:
             cur.execute("SELECT * FROM users WHERE user_id = %s", (user_id,))
             user = cur.fetchone()
+            
+            if user:
+                # Fix invalid timezones
+                try:
+                    safe_get_timezone(user[2])
+                except Exception:
+                    new_tz = 'Asia/Yangon'  # Default to Myanmar time
+                    cur.execute(
+                        "UPDATE users SET timezone = %s WHERE user_id = %s",
+                        (new_tz, user_id)
+                    )
+                    conn.commit()
+                    logger.warning(f"Fixed invalid timezone for user {user_id}: {user[2]} -> {new_tz}")
+                    return (user[0], user[1], new_tz, user[3], user[4])
+            
             return user
     except Exception as e:
         logger.error(f"Error getting user: {str(e)}")
@@ -223,11 +280,8 @@ def get_sky_time():
 
 def convert_to_user_time(dt, user_timezone):
     """Convert datetime to user's timezone"""
-    try:
-        user_tz = pytz.timezone(user_timezone)
-        return dt.astimezone(user_tz)
-    except pytz.UnknownTimeZoneError:
-        return dt
+    user_tz = safe_get_timezone(user_timezone)
+    return dt.astimezone(user_tz)
 
 def format_time(dt, time_format):
     """Format time based on user preference"""
@@ -372,11 +426,14 @@ async def handle_manual_timezone(update: Update, context: ContextTypes.DEFAULT_T
     
     try:
         # Validate timezone
-        pytz.timezone(timezone_str)
-        update_user_timezone(user_id, timezone_str)
-        await update.message.reply_text(f"✅ Timezone set to {timezone_str}")
+        tz = safe_get_timezone(timezone_str)
+        # Get IANA name
+        iana_name = tz.zone
+        
+        update_user_timezone(user_id, iana_name)
+        await update.message.reply_text(f"✅ Timezone set to {iana_name}")
         await show_main_menu(update, context)
-    except pytz.UnknownTimeZoneError:
+    except Exception as e:
         await update.message.reply_text(
             "❌ Invalid timezone. Please enter a valid timezone in the format 'Continent/City'.\n\n"
             "Example: 'Asia/Yangon', 'America/Los_Angeles'"
@@ -473,8 +530,8 @@ async def handle_wax_event(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text("Please use /start to initialize your settings")
         return
     
-    # Get user's current time
-    user_tz = pytz.timezone(user[2])
+    # Safely get user's timezone
+    user_tz = safe_get_timezone(user[2])
     user_time = datetime.now(user_tz)
     
     # Calculate event time based on selection
@@ -710,7 +767,7 @@ async def check_reminders(context: ContextTypes.DEFAULT_TYPE):
                 if not user:
                     continue
                     
-                user_tz = pytz.timezone(user[2])
+                user_tz = safe_get_timezone(user[2])
                 user_time = datetime.now(user_tz)
                 
                 # Calculate next event time
