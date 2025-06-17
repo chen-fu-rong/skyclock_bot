@@ -1,11 +1,11 @@
 import os
 import telebot
-from telebot import types
-import psycopg2
+import flask  # ← THIS LINE IS MANDATORY
+from flask import Flask, request
 from datetime import datetime, timedelta
 import pytz
-import time
-from flask import Flask
+import psycopg2
+
 
 # Initialize bot
 BOT_TOKEN = os.environ.get('BOT_TOKEN')
