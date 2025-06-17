@@ -7,3 +7,4 @@ apscheduler==3.10.4
 pytz==2023.3
 fastapi
 psycopg_pool
+psycopg
