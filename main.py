@@ -100,15 +100,14 @@ def create_user(user_id, chat_id):
         with conn.cursor() as cur:
             cur.execute(
                 "INSERT INTO users (user_id, chat_id) VALUES (%s, %s) ON CONFLICT (user_id) DO NOTHING",
-                (user_id, chat_id)
-            )  # <-- FIXED: closed the function call
-            conn.commit()
+                (user_id, chat_id)  # This line was missing a closing parenthesis
+            )
+        conn.commit()
     except Exception as e:
         logger.error(f"Error creating user: {str(e)}")
     finally:
         if conn:
             conn.close()
-
 
 def update_user_timezone(user_id, timezone):
     """Update user's timezone"""
@@ -118,6 +117,7 @@ def update_user_timezone(user_id, timezone):
             cur.execute(
                 "UPDATE users SET timezone = %s WHERE user_id = %s",
                 (timezone, user_id)
+            )
             conn.commit()
     except Exception as e:
         logger.error(f"Error updating timezone: {str(e)}")
@@ -133,6 +133,7 @@ def update_user_time_format(user_id, time_format):
             cur.execute(
                 "UPDATE users SET time_format = %s WHERE user_id = %s",
                 (time_format, user_id)
+            )
             conn.commit()
     except Exception as e:
         logger.error(f"Error updating time format: {str(e)}")
@@ -162,6 +163,7 @@ def create_event(user_id, event_type, notify_minutes):
             cur.execute(
                 "INSERT INTO events (user_id, event_type, notify_minutes) VALUES (%s, %s, %s)",
                 (user_id, event_type, notify_minutes)
+            )
             conn.commit()
     except Exception as e:
         logger.error(f"Error creating event: {str(e)}")
@@ -177,6 +179,7 @@ def toggle_event(event_id, is_active):
             cur.execute(
                 "UPDATE events SET is_active = %s WHERE id = %s",
                 (is_active, event_id)
+            )
             conn.commit()
     except Exception as e:
         logger.error(f"Error toggling event: {str(e)}")
