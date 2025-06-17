@@ -2,6 +2,7 @@ import os
 import logging
 import pytz
 import psycopg2
+import urllib.parse
 from datetime import datetime, time, timedelta
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
@@ -31,7 +32,7 @@ def get_db_connection():
     if not database_url:
         raise ValueError("DATABASE_URL environment variable not set")
     
-    result = urlparse(database_url)
+    result = urllib.parse.urlparse(database_url)
     conn = psycopg2.connect(
         dbname=result.path[1:],
         user=result.username,
@@ -44,6 +45,7 @@ def get_db_connection():
 
 def init_db():
     """Initialize database tables"""
+    conn = None
     try:
         conn = get_db_connection()
         with conn.cursor() as cur:
@@ -80,6 +82,7 @@ def init_db():
 
 def get_user(user_id):
     """Get user from database"""
+    conn = None
     try:
         conn = get_db_connection()
         with conn.cursor() as cur:
@@ -95,12 +98,13 @@ def get_user(user_id):
 
 def create_user(user_id, chat_id):
     """Create a new user in database"""
+    conn = None
     try:
         conn = get_db_connection()
         with conn.cursor() as cur:
             cur.execute(
                 "INSERT INTO users (user_id, chat_id) VALUES (%s, %s) ON CONFLICT (user_id) DO NOTHING",
-                (user_id, chat_id)  # This line was missing a closing parenthesis
+                (user_id, chat_id)
             )
         conn.commit()
     except Exception as e:
@@ -111,6 +115,7 @@ def create_user(user_id, chat_id):
 
 def update_user_timezone(user_id, timezone):
     """Update user's timezone"""
+    conn = None
     try:
         conn = get_db_connection()
         with conn.cursor() as cur:
@@ -118,7 +123,7 @@ def update_user_timezone(user_id, timezone):
                 "UPDATE users SET timezone = %s WHERE user_id = %s",
                 (timezone, user_id)
             )
-            conn.commit()
+        conn.commit()
     except Exception as e:
         logger.error(f"Error updating timezone: {str(e)}")
     finally:
@@ -127,6 +132,7 @@ def update_user_timezone(user_id, timezone):
 
 def update_user_time_format(user_id, time_format):
     """Update user's time format"""
+    conn = None
     try:
         conn = get_db_connection()
         with conn.cursor() as cur:
@@ -134,7 +140,7 @@ def update_user_time_format(user_id, time_format):
                 "UPDATE users SET time_format = %s WHERE user_id = %s",
                 (time_format, user_id)
             )
-            conn.commit()
+        conn.commit()
     except Exception as e:
         logger.error(f"Error updating time format: {str(e)}")
     finally:
@@ -143,6 +149,7 @@ def update_user_time_format(user_id, time_format):
 
 def get_user_events(user_id):
     """Get user's event notifications"""
+    conn = None
     try:
         conn = get_db_connection()
         with conn.cursor() as cur:
@@ -157,6 +164,7 @@ def get_user_events(user_id):
 
 def create_event(user_id, event_type, notify_minutes):
     """Create a new event notification"""
+    conn = None
     try:
         conn = get_db_connection()
         with conn.cursor() as cur:
@@ -164,7 +172,7 @@ def create_event(user_id, event_type, notify_minutes):
                 "INSERT INTO events (user_id, event_type, notify_minutes) VALUES (%s, %s, %s)",
                 (user_id, event_type, notify_minutes)
             )
-            conn.commit()
+        conn.commit()
     except Exception as e:
         logger.error(f"Error creating event: {str(e)}")
     finally:
@@ -173,6 +181,7 @@ def create_event(user_id, event_type, notify_minutes):
 
 def toggle_event(event_id, is_active):
     """Toggle event notification status"""
+    conn = None
     try:
         conn = get_db_connection()
         with conn.cursor() as cur:
@@ -180,7 +189,7 @@ def toggle_event(event_id, is_active):
                 "UPDATE events SET is_active = %s WHERE id = %s",
                 (is_active, event_id)
             )
-            conn.commit()
+        conn.commit()
     except Exception as e:
         logger.error(f"Error toggling event: {str(e)}")
     finally:
