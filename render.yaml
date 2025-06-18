@@ -1,5 +1,5 @@
 services:
-  - type: web
+  - type: worker  # Changed from web to worker
     name: skyclock-bot
     runtime: python
     buildCommand: pip install -r requirements.txt
@@ -11,8 +11,6 @@ services:
         fromDatabase:
           name: skyclock-db
           property: connectionString
-      - key: WEBHOOK_URL
-        value: https://skyclock-bot.onrender.com/webhook
       - key: ADMIN_IDS
         value: 484926463
       - key: RENDER
