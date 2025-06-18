@@ -69,24 +69,6 @@ def set_time_format(user_id, fmt):
             cur.execute("UPDATE users SET time_format = %s WHERE user_id = %s", (fmt, user_id))
             conn.commit()
 
-# ======================= EVENT LOGIC ===========================
-def get_next_event(event_type):
-    now_sky = datetime.now(SKY_TZ)
-    today = now_sky.replace(minute=0, second=0, microsecond=0)
-    times = []
-    for hour in range(24):
-        if event_type == 'grandma' and hour % 2 == 0:
-            times.append(today.replace(hour=hour, minute=5))
-        elif event_type == 'geyser' and hour % 2 == 1:
-            times.append(today.replace(hour=hour, minute=35))
-        elif event_type == 'turtle' and hour % 2 == 0:
-            times.append(today.replace(hour=hour, minute=20))
-
-    for t in times:
-        if t > now_sky:
-            return t
-    return times[0] + timedelta(days=1)
-
 # ======================= TELEGRAM UI ===========================
 @bot.message_handler(commands=['start'])
 def start(message):
@@ -137,35 +119,33 @@ def handle_event(message):
     tz, fmt = user
     user_tz = pytz.timezone(tz)
 
-    # Get next event in user time
-    next_event = get_next_event(event_type).astimezone(user_tz)
-    now = datetime.now(user_tz)
-    diff = next_event - now
+    # Generate local event times based on user's timezone
+    now_user = datetime.now(user_tz)
+    today_user = now_user.replace(hour=0, minute=0, second=0, microsecond=0)
+
+    event_times = []
+    for hour in range(24):
+        if event_type == 'grandma' and hour % 2 == 0:
+            event_times.append(today_user.replace(hour=hour, minute=5))
+        elif event_type == 'turtle' and hour % 2 == 0:
+            event_times.append(today_user.replace(hour=hour, minute=20))
+        elif event_type == 'geyser' and hour % 2 == 1:
+            event_times.append(today_user.replace(hour=hour, minute=35))
+
+    # Find next event
+    next_event = next((et for et in event_times if et > now_user), event_times[0] + timedelta(days=1))
+    diff = next_event - now_user
     hrs, mins = divmod(diff.seconds // 60, 60)
     text = f"Next {event_type.capitalize()} event at {format_time(next_event, fmt)} ({hrs}h {mins}m left)"
 
-    # Generate list of today's event times (based on Sky Time)
+    # Send buttons for all event times
     markup = telebot.types.ReplyKeyboardMarkup(resize_keyboard=True)
-    now_sky = datetime.now(SKY_TZ).replace(minute=0, second=0, microsecond=0)
-
-    for h in range(24):
-        if event_type == 'grandma' and h % 2 == 0:
-            sky_event = now_sky.replace(hour=h, minute=5)
-        elif event_type == 'turtle' and h % 2 == 0:
-            sky_event = now_sky.replace(hour=h, minute=20)
-        elif event_type == 'geyser' and h % 2 == 1:
-            sky_event = now_sky.replace(hour=h, minute=35)
-        else:
-            continue
-
-        local_time = sky_event.astimezone(user_tz)
-        display = format_time(local_time, fmt)
-        markup.row(display)
-
+    for et in event_times:
+        markup.row(format_time(et, fmt))
     markup.row('🔙 Back')
+
     bot.send_message(message.chat.id, text + "\nChoose a time to get a reminder:", reply_markup=markup)
     bot.register_next_step_handler(message, ask_reminder_time, event_type)
-
 
 def ask_reminder_time(message, event_type):
     try:
@@ -182,10 +162,18 @@ def save_reminder(message, event_type, event_time_str):
         if not user: return
         tz, _ = user
         user_tz = pytz.timezone(tz)
-        today = datetime.now(user_tz).replace(hour=int(event_time_str.split(':')[0]),
-                                              minute=int(event_time_str.split(':')[1]),
-                                              second=0, microsecond=0)
+        now = datetime.now(user_tz)
+        hour, minute = map(int, event_time_str.replace("AM", "").replace("PM", "").strip().split(":"))
+        if "PM" in event_time_str and hour != 12:
+            hour += 12
+        if "AM" in event_time_str and hour == 12:
+            hour = 0
+
+        today = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+        if today < now:
+            today += timedelta(days=1)
         event_time_utc = today.astimezone(pytz.utc)
+
         with get_db() as conn:
             with conn.cursor() as cur:
                 cur.execute("""
