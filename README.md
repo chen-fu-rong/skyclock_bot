@@ -1,1 +1,0 @@
-# skyclock_bot
