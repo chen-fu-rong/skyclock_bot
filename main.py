@@ -710,7 +710,31 @@ async def show_settings_menu(query):
         logger.error(f"Error in show_settings_menu: {str(e)}")
         await query.edit_message_text("⚠️ An error occurred while loading settings.")
 
-# ... [Rest of the code remains the same] ...
+# Add this function BEFORE your main() definition
+def show_notification_settings(update: Update, context: CallbackContext):
+    query = update.callback_query
+    user_id = query.from_user.id
+    
+    # Fetch user settings from DB
+    session = Session()
+    user = session.query(User).filter_by(telegram_id=user_id).first()
+    
+    # Create settings message with inline keyboard
+    keyboard = [
+        [InlineKeyboardButton(f"Daily Reminder: {'✅' if user.daily_reminder else '❌'}", callback_data='toggle_daily')],
+        [InlineKeyboardButton(f"Event Reminders: {'✅' if user.event_reminders else '❌'}", callback_data='toggle_events')],
+        [InlineKeyboardButton("🔙 Back", callback_data="settings_back")]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    # Edit message with new settings
+    query.edit_message_text(
+        text="🔔 *Notification Settings*:\n\nToggle features on/off:",
+        reply_markup=reply_markup,
+        parse_mode="Markdown"
+    )
+    session.close()
+    return NOTIFICATION_SETTINGS
 
 # ===================== Main Application =====================
 def main() -> None:
@@ -742,6 +766,7 @@ def main() -> None:
             ]
         },
         fallbacks=[CommandHandler("start", start)]
+        per_message=True
     )
     
     # Register handlers
