@@ -136,27 +136,36 @@ def handle_event(message):
     if not user: return
     tz, fmt = user
     user_tz = pytz.timezone(tz)
+
+    # Get next event in user time
     next_event = get_next_event(event_type).astimezone(user_tz)
     now = datetime.now(user_tz)
     diff = next_event - now
     hrs, mins = divmod(diff.seconds // 60, 60)
     text = f"Next {event_type.capitalize()} event at {format_time(next_event, fmt)} ({hrs}h {mins}m left)"
+
+    # Generate list of today's event times (based on Sky Time)
     markup = telebot.types.ReplyKeyboardMarkup(resize_keyboard=True)
+    now_sky = datetime.now(SKY_TZ).replace(minute=0, second=0, microsecond=0)
+
     for h in range(24):
-        t = get_next_event(event_type).replace(hour=h)
         if event_type == 'grandma' and h % 2 == 0:
-            t = t.replace(minute=5)
+            sky_event = now_sky.replace(hour=h, minute=5)
         elif event_type == 'turtle' and h % 2 == 0:
-            t = t.replace(minute=20)
+            sky_event = now_sky.replace(hour=h, minute=20)
         elif event_type == 'geyser' and h % 2 == 1:
-            t = t.replace(minute=35)
+            sky_event = now_sky.replace(hour=h, minute=35)
         else:
             continue
-        t_local = t.astimezone(user_tz)
-        markup.row(t_local.strftime('%H:%M'))
+
+        local_time = sky_event.astimezone(user_tz)
+        display = format_time(local_time, fmt)
+        markup.row(display)
+
     markup.row('🔙 Back')
     bot.send_message(message.chat.id, text + "\nChoose a time to get a reminder:", reply_markup=markup)
     bot.register_next_step_handler(message, ask_reminder_time, event_type)
+
 
 def ask_reminder_time(message, event_type):
     try:
