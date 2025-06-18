@@ -12,23 +12,22 @@ def get_time_input_keyboard():
     ], resize_keyboard=True, one_time_keyboard=True)
 
 def parse_time_input(text):
-    """Convert user time input string to a time object"""
     try:
         text = text.strip().upper()
-
-        # Matches formats like: 10:30 AM, 10 AM
-        if re.match(r'^\d{1,2}:\d{2}\s*[AP]M$', text):
+        # Handle formats like "6:30 PM"
+        if re.match(r'^\d{1,2}[: ]\d{1,2}\s*[AP]M$', text):
             return datetime.strptime(text, '%I:%M %p').time()
+        # Handle formats like "6 PM"
         elif re.match(r'^\d{1,2}\s*[AP]M$', text):
             return datetime.strptime(text, '%I %p').time()
-        elif re.match(r'^\d{1,2}:\d{2}$', text):  # 24-hour format: 13:30
+        # Handle 24-hour formats like "18:30"
+        elif re.match(r'^\d{1,2}:\d{1,2}$', text):
             return datetime.strptime(text, '%H:%M').time()
-        elif re.match(r'^\d{1,2}$', text):  # Only hour provided
+        # Handle single numbers (hours)
+        elif re.match(r'^\d{1,2}$', text):
             hour = int(text)
             if 0 <= hour <= 23:
-                return datetime.strptime(f"{hour:02d}:00", '%H:%M').time()
-
+                return time(hour=hour)
+        return None
     except ValueError:
-        pass
-
-    return None
+        return None

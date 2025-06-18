@@ -33,10 +33,14 @@ db = Database(DB_URL)
 nav_manager = NavigationManager(db)
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
-    db.ensure_user_exists(user.id, user.username)
-    menu = build_menu_content(nav_manager, db, user.id, "main_menu")
-    await update.message.reply_text(**menu)
+    try:
+        user = update.effective_user
+        db.ensure_user_exists(user.id, user.username)
+        menu = build_menu_content(nav_manager, db, user.id, "main_menu")
+        await update.message.reply_text(**menu)
+    except Exception as e:
+        logger.error(f"Start command error: {e}")
+        await update.message.reply_text("⚠️ Bot initialization error. Please try again later.")
 
 async def handle_menu_navigation(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query

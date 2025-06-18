@@ -4,6 +4,43 @@ from contextlib import contextmanager
 from datetime import datetime, timedelta
 
 class Database:
+    class Database:
+        def __init__(self, db_url):
+            self.db_url = db_url
+            self.initialize_database()  # Initialize schema on creation
+
+    def initialize_database(self):
+        with self.get_cursor() as cur:
+            # Create tables if not exists
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS users (
+                    user_id BIGINT PRIMARY KEY,
+                    username TEXT,
+                    timezone TEXT DEFAULT 'UTC',
+                    nav_stack TEXT[] DEFAULT '{}'
+                );
+                
+                CREATE TABLE IF NOT EXISTS subscriptions (
+                    user_id BIGINT REFERENCES users(user_id) ON DELETE CASCADE,
+                    event_type TEXT,
+                    PRIMARY KEY (user_id, event_type)
+                );
+                
+                CREATE TABLE IF NOT EXISTS reminders (
+                    id SERIAL PRIMARY KEY,
+                    user_id BIGINT REFERENCES users(user_id) ON DELETE CASCADE,
+                    trigger_time TIMESTAMPTZ NOT NULL,
+                    message TEXT NOT NULL,
+                    is_recurring BOOLEAN NOT NULL DEFAULT FALSE,
+                    event_type TEXT NOT NULL DEFAULT 'CUSTOM'
+                );
+                
+                CREATE TABLE IF NOT EXISTS notifications (
+                    user_id BIGINT REFERENCES users(user_id) ON DELETE CASCADE,
+                    event TEXT,
+                    PRIMARY KEY (user_id, event)
+                );
+            """)
     def __init__(self, db_url):
         self.db_url = db_url
 
