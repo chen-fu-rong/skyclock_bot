@@ -36,10 +36,11 @@ def init_db():
             CREATE TABLE IF NOT EXISTS reminders (
                 id SERIAL PRIMARY KEY,
                 user_id BIGINT REFERENCES users(user_id),
+                chat_id BIGINT NOT NULL,  -- Added chat_id column
                 event_type TEXT,
                 event_time_utc TIMESTAMP,
                 notify_before INT,
-                is_daily BOOLEAN DEFAULT FALSE  -- New column for reminder type
+                is_daily BOOLEAN DEFAULT FALSE
             );
             """)
             conn.commit()
@@ -231,9 +232,9 @@ def save_reminder(message, event_type, event_time_str, is_daily):
         with get_db() as conn:
             with conn.cursor() as cur:
                 cur.execute("""
-                    INSERT INTO reminders (user_id, event_type, event_time_utc, notify_before, is_daily)
-                    VALUES (%s, %s, %s, %s, %s)
-                """, (message.from_user.id, event_type, event_time_utc, mins, is_daily))
+                    INSERT INTO reminders (user_id, chat_id, event_type, event_time_utc, notify_before, is_daily)
+                    VALUES (%s, %s, %s, %s, %s, %s)
+                """, (message.from_user.id, message.chat.id, event_type, event_time_utc, mins, is_daily))
                 conn.commit()
                 
         schedule_reminder(message.chat.id, event_time_utc, mins, event_type, is_daily)
