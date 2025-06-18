@@ -26,6 +26,7 @@ def get_db():
 def init_db():
     with get_db() as conn:
         with conn.cursor() as cur:
+            # Create users table
             cur.execute("""
             CREATE TABLE IF NOT EXISTS users (
                 user_id BIGINT PRIMARY KEY,
@@ -33,16 +34,28 @@ def init_db():
                 timezone TEXT NOT NULL,
                 time_format TEXT DEFAULT '12hr'
             );
+            """)
+            
+            # Create reminders table with proper structure
+            cur.execute("""
             CREATE TABLE IF NOT EXISTS reminders (
                 id SERIAL PRIMARY KEY,
                 user_id BIGINT REFERENCES users(user_id),
-                chat_id BIGINT NOT NULL,  -- Added chat_id column
+                chat_id BIGINT NOT NULL,
                 event_type TEXT,
                 event_time_utc TIMESTAMP,
                 notify_before INT,
                 is_daily BOOLEAN DEFAULT FALSE
             );
             """)
+            
+            # Add chat_id column if it doesn't exist (for existing databases)
+            try:
+                cur.execute("ALTER TABLE reminders ADD COLUMN IF NOT EXISTS chat_id BIGINT;")
+                cur.execute("ALTER TABLE reminders ALTER COLUMN chat_id SET NOT NULL;")
+            except Exception as e:
+                logging.warning(f"Couldn't add chat_id column: {e}")
+            
             conn.commit()
 
 # ======================== UTILITIES ============================
