@@ -1,26 +1,30 @@
+import logging
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
-from utils import get_next_reset_utc
+from datetime import datetime, timedelta
+import pytz
+
+async def send_reminder(application, user_id, message):
+    try:
+        await application.bot.send_message(
+            chat_id=user_id,
+            text=f"⏰ Reminder!\n\n{message}"
+        )
+        return True
+    except Exception as e:
+        logging.error(f"Failed to send reminder to {user_id}: {e}")
+        return False
 
 def start_scheduler(application, db):
     scheduler = AsyncIOScheduler()
     
-    # Daily reset notification (runs every day at 07:30 UTC)
-    @scheduler.scheduled_job('cron', hour=7, minute=30)
-    async def notify_reset():
-        query = "SELECT user_id FROM users WHERE ..."  # Get users who want reset alerts
-        reset_utc = get_next_reset_utc()
-        
-        async with application:
-            for user_id in users:
-                await application.bot.send_message(
-                    chat_id=user_id,
-                    text=f"⏰ Daily reset in 30 minutes! ({reset_utc})"
-                )
+    async def check_reminders():
+        now = datetime.utcnow().replace(tzinfo=pytz.utc)
+        reminders = db.get_due_reminders(now)
+        for (reminder_id, user_id, message, is_recurring) in reminders:
+            success = await send_reminder(application, user_id, message)
+            if success and not is_recurring:
+                db.delete_reminder(reminder_id, user_id)
     
-    # Traveling Spirit alerts (Thursdays 00:00 PST → 08:00 UTC)
-    @scheduler.scheduled_job('cron', day_of_week='thu', hour=8)
-    async def notify_spirit():
-        # Implementation
-        pass
-        
+    scheduler.add_job(check_reminders, 'interval', minutes=1)
+    
     scheduler.start()
