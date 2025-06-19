@@ -361,22 +361,46 @@ def go_back(message):
 
 # ====================== RESCHEDULE REMINDERS ===================
 def reschedule_reminders():
-    try:
-        with get_db() as conn:
-            with conn.cursor() as cur:
-                cur.execute("SELECT chat_id, event_type, event_time_utc, notify_before, is_daily FROM reminders")
-                for row in cur.fetchall():
-                    chat_id, event_type, event_time_utc, notify_before, is_daily = row
-                    schedule_reminder(chat_id, event_time_utc, notify_before, event_type, is_daily)
-        logger.info("Rescheduled existing reminders")
-    except Exception as e:
-        logger.error(f"Error rescheduling reminders: {str(e)}", exc_info=True)
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT chat_id, event_type, event_time_utc, notify_before FROM reminders")
+            for chat_id, event_type, event_time_utc, notify_before in cur.fetchall():
+                notify_time = event_time_utc - timedelta(minutes=notify_before)
+                if notify_time > datetime.utcnow():
+                    scheduler.add_job(
+                        lambda cid=chat_id, et=event_type: bot.send_message(cid, f"⏰ Reminder: {et.capitalize()} event is starting soon!"),
+                        trigger='date',
+                        run_date=notify_time
+                    )
+
+def schedule_all_daily_reminders():
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT user_id, event_type, event_time_local, notify_before FROM subscriptions")
+            for user_id, event_type, time_obj, notify_before in cur.fetchall():
+                user = get_user(user_id)
+                if not user:
+                    continue
+                tz, _ = user
+                user_tz = pytz.timezone(tz)
+                now = datetime.now(user_tz)
+                target_time = now.replace(hour=time_obj.hour, minute=time_obj.minute, second=0, microsecond=0)
+                reminder_time = target_time - timedelta(minutes=notify_before)
+                if reminder_time < now:
+                    reminder_time += timedelta(days=1)
+                scheduler.add_job(
+                    lambda uid=user_id, et=event_type: bot.send_message(uid, f"⏰ Daily reminder: {et.capitalize()} event is starting soon!"),
+                    trigger='date',
+                    run_date=reminder_time
+                )
+
 
 # ========================== MAIN ===============================
 if __name__ == '__main__':
     logger.info("Starting bot...")
     init_db()
     reschedule_reminders()
+    schedule_all_daily_reminders()
     bot.remove_webhook()
     bot.set_webhook(url=WEBHOOK_URL)
     app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 10000)))
