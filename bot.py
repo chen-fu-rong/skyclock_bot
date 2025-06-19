@@ -8,19 +8,20 @@ import psycopg2
 from apscheduler.schedulers.background import BackgroundScheduler
 from datetime import datetime, timedelta
 
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
 # ========================== CONFIG =============================
 API_TOKEN = os.getenv("BOT_TOKEN") or "YOUR_BOT_TOKEN"
 WEBHOOK_URL = os.getenv("WEBHOOK_URL") or "https://skyclock-bot.onrender.com/webhook"
 DB_URL = os.getenv("DATABASE_URL") or "postgresql://user:pass@host:port/db"
-SKY_TZ = pytz.timezone("America/Los_Angeles")
+SKY_TZ = pyt极.timezone("America/Los_Angeles")
 
 bot = telebot.TeleBot(API_TOKEN)
 app = Flask(__name__)
 scheduler = BackgroundScheduler()
 scheduler.start()
-
-# ========================== STATE ==============================
-user_sessions = {}
 
 # ========================== DATABASE ===========================
 def get_db():
@@ -29,7 +30,7 @@ def get_db():
 def init_db():
     with get_db() as conn:
         with conn.cursor() as cur:
-            # Create users table
+            # Create tables if they don't exist
             cur.execute("""
             CREATE TABLE IF NOT EXISTS users (
                 user_id BIGINT PRIMARY KEY,
@@ -37,39 +38,18 @@ def init_db():
                 timezone TEXT NOT NULL,
                 time_format TEXT DEFAULT '12hr'
             );
-            """)
-            
-            # Create reminders table with proper structure
-            cur.execute("""
             CREATE TABLE IF NOT EXISTS reminders (
                 id SERIAL PRIMARY KEY,
                 user_id BIGINT REFERENCES users(user_id),
                 chat_id BIGINT NOT NULL,
-                event_type TEXT,
+                event_type TEXT NOT NULL,
                 event_time_utc TIMESTAMP NOT NULL,
-                notify_before INT,
+                notify_before INT NOT NULL,
                 is_daily BOOLEAN DEFAULT FALSE
             );
             """)
-            
-            # Add missing columns if they don't exist
-            try:
-                cur.execute("ALTER TABLE reminders ADD COLUMN IF NOT EXISTS chat_id BIGINT;")
-                cur.execute("ALTER TABLE reminders ADD COLUMN IF NOT EXISTS event_time_utc TIMESTAMP;")
-                cur.execute("ALTER TABLE reminders ADD COLUMN IF NOT EXISTS is_daily BOOLEAN DEFAULT FALSE;")
-                # Set NOT NULL constraints after adding columns
-                cur.execute("ALTER TABLE reminders ALTER COLUMN chat_id SET NOT NULL;")
-                cur.execute("ALTER TABLE reminders ALTER COLUMN event_time_utc SET NOT NULL;")
-            except Exception as e:
-                logging.warning(f"Couldn't add columns: {e}")
-            
-            # Drop old subscriptions table if it exists
-            try:
-                cur.execute("DROP TABLE IF EXISTS subscriptions;")
-            except:
-                pass
-            
             conn.commit()
+    logger.info("Database initialization complete")
 
 # ========================== WEBHOOK ============================
 @app.route('/webhook', methods=['POST'])
@@ -331,17 +311,22 @@ def go_back(message):
 
 # ====================== RESCHEDULE REMINDERS ===================
 def reschedule_reminders():
-    with get_db() as conn:
-        with conn.cursor() as cur:
-            cur.execute("SELECT chat_id, event_type, event_time_utc, notify_before, is_daily FROM reminders")
-            for row in cur.fetchall():
-                chat_id, event_type, event_time_utc, notify_before, is_daily = row
-                schedule_reminder(chat_id, event_time_utc, notify_before, event_type, is_daily)
+    try:
+        with get_db() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT chat_id, event_type, event_time_utc, notify_before, is_daily FROM reminders")
+                for row in cur.fetchall():
+                    chat_id, event_type, event_time_utc, notify_before, is_daily = row
+                    schedule_reminder(chat_id, event_time_utc, notify_before, event_type, is_daily)
+        logger.info("Rescheduled existing reminders")
+    except Exception as e:
+        logger.error(f"Error rescheduling reminders: {e}")
 
 # ========================== MAIN ===============================
 if __name__ == '__main__':
+    logger.info("Starting bot...")
     init_db()
-    reschedule_reminders()  # Reschedule existing reminders
+    reschedule_reminders()
     bot.remove_webhook()
     bot.set_webhook(url=WEBHOOK_URL)
     app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 10000)))
