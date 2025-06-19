@@ -35,7 +35,7 @@ def init_db():
         with conn.cursor() as cur:
             # Create tables if they don't exist
             cur.execute("""
-            CREATE TABLE IF极 NOT EXISTS users (
+            CREATE TABLE IF NOT EXISTS users (
                 user_id BIGINT PRIMARY KEY,
                 chat_id BIGINT NOT NULL,
                 timezone TEXT NOT NULL,
@@ -347,7 +347,7 @@ def toggle_time_format(message):
     user = get_user(message.from_user.id)
     if not user: return
     _, fmt = user
-    new_fmt = '24hr' if fmt == '12极' else '12hr'
+    new_fmt = '24hr' if fmt == '12' else '12hr'
     set_time_format(message.from_user.id, new_fmt)
     bot.send_message(message.chat.id, f"✅ Time format changed to {new_fmt}")
 
