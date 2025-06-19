@@ -18,8 +18,6 @@ app = Flask(__name__)
 scheduler = BackgroundScheduler()
 scheduler.start()
 
-user_sessions = {}
-
 # ========================== DATABASE ===========================
 def get_db():
     return psycopg2.connect(DB_URL, sslmode='require')
@@ -50,6 +48,23 @@ def init_db():
             );
             """)
             conn.commit()
+
+def set_timezone(user_id, chat_id, timezone):
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+            INSERT INTO users (user_id, chat_id, timezone)
+            VALUES (%s, %s, %s)
+            ON CONFLICT (user_id) DO UPDATE
+            SET chat_id = EXCLUDED.chat_id, timezone = EXCLUDED.timezone;
+            """, (user_id, chat_id, timezone))
+            conn.commit()
+
+def send_main_menu(chat_id):
+    markup = telebot.types.ReplyKeyboardMarkup(resize_keyboard=True)
+    markup.row('🕒 Set Reminder')
+    markup.row('⏰ My Reminders', '⚙️ Settings')
+    bot.send_message(chat_id, "Choose an option:", reply_markup=markup)
 
 # ========================== START HANDLER ======================
 @bot.message_handler(commands=['start'])
@@ -89,6 +104,16 @@ def save_timezone(message):
     except Exception as e:
         bot.send_message(message.chat.id, "⚠️ Failed to save timezone")
         print(traceback.format_exc())
+
+# ========================== MAIN MENU HANDLERS =================
+@bot.message_handler(func=lambda message: message.text in ['🕒 Set Reminder', '⏰ My Reminders', '⚙️ Settings'])
+def handle_main_menu(message):
+    if message.text == '🕒 Set Reminder':
+        bot.send_message(message.chat.id, "Set reminder: not implemented yet")
+    elif message.text == '⏰ My Reminders':
+        bot.send_message(message.chat.id, "My reminders: not implemented yet")
+    elif message.text == '⚙️ Settings':
+        bot.send_message(message.chat.id, "Settings: not implemented yet")
 
 # ========================== WEBHOOK ============================
 @app.route('/webhook', methods=['POST'])
