@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 API_TOKEN = os.getenv("BOT_TOKEN") or "YOUR_BOT_TOKEN"
 WEBHOOK_URL = os.getenv("WEBHOOK_URL") or "https://skyclock-bot.onrender.com/webhook"
 DB_URL = os.getenv("DATABASE_URL") or "postgresql://user:pass@host:port/db"
-SKY_TZ = pytz.timezone("America/Los_Angeles")  # Corrected timezone
+SKY_TZ = pytz.timezone("America/Los_Angeles")
 
 bot = telebot.TeleBot(API_TOKEN)
 app = Flask(__name__)
@@ -35,7 +35,7 @@ def init_db():
         with conn.cursor() as cur:
             # Create tables if they don't exist
             cur.execute("""
-            CREATE TABLE IF NOT EXISTS users (
+            CREATE TABLE IF极 NOT EXISTS users (
                 user_id BIGINT PRIMARY KEY,
                 chat_id BIGINT NOT NULL,
                 timezone TEXT NOT NULL,
@@ -119,13 +119,19 @@ def start(message):
     bot.register_next_step_handler(message, save_timezone)
 
 def save_timezone(message):
+    # FIXED: Properly handle Myanmar timezone button
     if message.text == '🇲🇲 Set to Myanmar Time':
         tz = 'Asia/Yangon'
     else:
         try:
+            # Verify it's a valid timezone
             pytz.timezone(message.text)
             tz = message.text
-        except:
+        except pytz.UnknownTimeZoneError:
+            bot.send_message(message.chat.id, "❌ Invalid timezone. Please try again:")
+            return bot.register_next_step_handler(message, save_timezone)
+        except Exception as e:
+            logger.error(f"Timezone error: {e}")
             bot.send_message(message.chat.id, "❌ Invalid timezone. Please try again:")
             return bot.register_next_step_handler(message, save_timezone)
 
@@ -137,7 +143,7 @@ def send_main_menu(chat_id):
     markup = telebot.types.ReplyKeyboardMarkup(resize_keyboard=True)
     markup.row('🕒 Sky Clock', '🕯 Wax')
     markup.row('💎 Shards', '⚙️ Settings')
-    bot.send_message(chat极d, "🏠 Main Menu:", reply_markup=markup)
+    bot.send_message(chat_id, "🏠 Main Menu:", reply_markup=markup)
 
 @bot.message_handler(func=lambda msg: msg.text == '🕒 Sky Clock')
 def sky_clock(message):
@@ -163,7 +169,10 @@ def handle_event(message):
     mapping = {'🧓 Grandma': 'grandma', '🐢 Turtle': 'turtle', '🌋 Geyser': 'geyser'}
     event_type = mapping[message.text]
     user = get_user(message.from_user.id)
-    if not user: return
+    if not user: 
+        bot.send_message(message.chat.id, "❌ Timezone not set. Please use /start first.")
+        return
+        
     tz, fmt = user
     user_tz = pytz.timezone(tz)
 
@@ -338,7 +347,7 @@ def toggle_time_format(message):
     user = get_user(message.from_user.id)
     if not user: return
     _, fmt = user
-    new_fmt = '24hr' if fmt == '12hr' else '12hr'
+    new_fmt = '24hr' if fmt == '12极' else '12hr'
     set_time_format(message.from_user.id, new_fmt)
     bot.send_message(message.chat.id, f"✅ Time format changed to {new_fmt}")
 
