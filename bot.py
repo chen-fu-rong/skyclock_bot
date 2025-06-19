@@ -175,6 +175,28 @@ def handle_event(message):
 
 # ... other handler and reminder functions remain unchanged (see previous steps)
 
+# ======================== DAILY JOBS ============================
+def schedule_all_daily_reminders():
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT user_id, event_type, event_time_local, notify_before FROM subscriptions")
+            for user_id, event_type, time_obj, before in cur.fetchall():
+                user = get_user(user_id)
+                if not user:
+                    continue
+                tz, _ = user
+                user_tz = pytz.timezone(tz)
+                now = datetime.now(user_tz)
+                target_time = now.replace(hour=time_obj.hour, minute=time_obj.minute, second=0, microsecond=0)
+                reminder_time = target_time - timedelta(minutes=before)
+                if reminder_time < now:
+                    reminder_time += timedelta(days=1)
+                scheduler.add_job(
+                    lambda uid=user_id, et=event_type: bot.send_message(uid, f"⏰ Daily reminder: {et.capitalize()} event is starting soon!"),
+                    trigger='date',
+                    run_date=reminder_time
+                )
+
 # ========================== MAIN ===============================
 if __name__ == '__main__':
     init_db()
