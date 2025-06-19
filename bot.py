@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 API_TOKEN = os.getenv("BOT_TOKEN") or "YOUR_BOT_TOKEN"
 WEBHOOK_URL = os.getenv("WEBHOOK_URL") or "https://skyclock-bot.onrender.com/webhook"
 DB_URL = os.getenv("DATABASE_URL") or "postgresql://user:pass@host:port/db"
-SKY_TZ = pyt极.timezone("America/Los_Angeles")
+SKY_TZ = pytz.timezone("America/Los_Angeles")
 
 bot = telebot.TeleBot(API_TOKEN)
 app = Flask(__name__)
