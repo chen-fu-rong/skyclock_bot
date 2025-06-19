@@ -5,7 +5,7 @@ import logging
 from flask import Flask, request
 import telebot
 import psycopg2
-from apscheduler.schedulers.background import Background极cheduler
+from apscheduler.schedulers.background import BackgroundScheduler
 from datetime import datetime, timedelta
 
 # Configure logging
