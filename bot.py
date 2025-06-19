@@ -29,6 +29,7 @@ def get_db():
 def init_db():
     with get_db() as conn:
         with conn.cursor() as cur:
+            # Create users table
             cur.execute("""
             CREATE TABLE IF NOT EXISTS users (
                 user_id BIGINT PRIMARY KEY,
@@ -36,16 +37,38 @@ def init_db():
                 timezone TEXT NOT NULL,
                 time_format TEXT DEFAULT '12hr'
             );
+            """)
+            
+            # Create reminders table with proper structure
+            cur.execute("""
             CREATE TABLE IF NOT EXISTS reminders (
                 id SERIAL PRIMARY KEY,
                 user_id BIGINT REFERENCES users(user_id),
                 chat_id BIGINT NOT NULL,
                 event_type TEXT,
-                event_time_utc TIMESTAMP,
+                event_time_utc TIMESTAMP NOT NULL,
                 notify_before INT,
                 is_daily BOOLEAN DEFAULT FALSE
             );
             """)
+            
+            # Add missing columns if they don't exist
+            try:
+                cur.execute("ALTER TABLE reminders ADD COLUMN IF NOT EXISTS chat_id BIGINT;")
+                cur.execute("ALTER TABLE reminders ADD COLUMN IF NOT EXISTS event_time_utc TIMESTAMP;")
+                cur.execute("ALTER TABLE reminders ADD COLUMN IF NOT EXISTS is_daily BOOLEAN DEFAULT FALSE;")
+                # Set NOT NULL constraints after adding columns
+                cur.execute("ALTER TABLE reminders ALTER COLUMN chat_id SET NOT NULL;")
+                cur.execute("ALTER TABLE reminders ALTER COLUMN event_time_utc SET NOT NULL;")
+            except Exception as e:
+                logging.warning(f"Couldn't add columns: {e}")
+            
+            # Drop old subscriptions table if it exists
+            try:
+                cur.execute("DROP TABLE IF EXISTS subscriptions;")
+            except:
+                pass
+            
             conn.commit()
 
 # ========================== WEBHOOK ============================
