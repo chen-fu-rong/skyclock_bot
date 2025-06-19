@@ -1,13 +1,14 @@
-# bot.py — Enhanced UI with Reminder Frequency Options
+# bot.py — Enhanced with Sorted Time Selection
 import os
 import pytz
 import logging
 import traceback
+import psycopg2
 from flask import Flask, request
 import telebot
-import psycopg2
 from apscheduler.schedulers.background import BackgroundScheduler
 from datetime import datetime, timedelta
+from psycopg2 import errors as psycopg2_errors
 
 # Configure logging
 logging.basicConfig(
@@ -41,6 +42,7 @@ def get_db():
 def init_db():
     with get_db() as conn:
         with conn.cursor() as cur:
+            # Create users table if not exists
             cur.execute("""
             CREATE TABLE IF NOT EXISTS users (
                 user_id BIGINT PRIMARY KEY,
@@ -48,15 +50,25 @@ def init_db():
                 timezone TEXT NOT NULL,
                 time_format TEXT DEFAULT '12hr'
             );
-            CREATE TABLE IF NOT EXISTS reminders (
-                id SERIAL PRIMARY KEY,
-                user_id BIGINT REFERENCES users(user_id),
-                event_type TEXT,
-                event_time_utc TIMESTAMP,
-                notify_before INT,
-                is_daily BOOLEAN DEFAULT FALSE
-            );
             """)
+            
+            # Create reminders table if not exists
+            try:
+                cur.execute("""
+                CREATE TABLE IF NOT EXISTS reminders (
+                    id SERIAL PRIMARY KEY,
+                    user_id BIGINT REFERENCES users(user_id),
+                    event_type TEXT,
+                    event_time_utc TIMESTAMP,
+                    notify_before INT,
+                    is_daily BOOLEAN DEFAULT FALSE
+                );
+                """)
+            except psycopg2_errors.DuplicateColumn:
+                # This is safe to ignore - column already exists
+                conn.rollback()
+                logger.info("is_daily column already exists in reminders table")
+            
             conn.commit()
 
 # ======================== UTILITIES ============================
@@ -246,11 +258,10 @@ def handle_event(message):
         
     tz, fmt = user
     user_tz = pytz.timezone(tz)
-
-    # Generate local event times based on user's timezone
     now_user = datetime.now(user_tz)
-    today_user = now_user.replace(hour=0, minute=0, second=0, microsecond=0)
 
+    # Generate all event times for today in user's timezone
+    today_user = now_user.replace(hour=0, minute=0, second=0, microsecond=0)
     event_times = []
     for hour in range(24):
         if hour_type == 'even' and hour % 2 == 0:
@@ -258,8 +269,24 @@ def handle_event(message):
         elif hour_type == 'odd' and hour % 2 == 1:
             event_times.append(today_user.replace(hour=hour, minute=int(event_schedule.split(':')[1])))
 
-    # Find next event
-    next_event = next((et for et in event_times if et > now_user), event_times[0] + timedelta(days=1))
+    # Calculate next occurrences for each event time
+    next_occurrences = []
+    for et in event_times:
+        if et < now_user:
+            # If event already passed today, use tomorrow's time
+            next_occurrences.append(et + timedelta(days=1))
+        else:
+            next_occurrences.append(et)
+    
+    # Sort by next occurrence
+    sorted_indices = sorted(range(len(next_occurrences)), key=lambda i: next_occurrences[i])
+    sorted_event_times = [event_times[i] for i in sorted_indices]
+    next_event = next_occurrences[sorted_indices[0]]
+    
+    # Format the next event time for display
+    next_event_formatted = format_time(next_event, fmt)
+    
+    # Calculate time until next event
     diff = next_event - now_user
     hrs, mins = divmod(diff.seconds // 60, 60)
     
@@ -272,56 +299,49 @@ def handle_event(message):
     
     text = (
         f"{description}\n\n"
-        f"⏰ Next Event: {format_time(next_event, fmt)}\n"
+        f"⏰ Next Event: {next_event_formatted}\n"
         f"⏳ Time Remaining: {hrs}h {mins}m\n\n"
         "Choose a time to set a reminder:"
     )
 
-    # Send buttons for all event times
+    # Send buttons for event times sorted by next occurrence
     markup = telebot.types.ReplyKeyboardMarkup(resize_keyboard=True)
-    # Group times in pairs for better layout
-    for i in range(0, len(event_times), 2):
-        row = [format_time(event_times[i], fmt)]
-        if i+1 < len(event_times):
-            row.append(format_time(event_times[i+1], fmt))
+    
+    # Highlight next event with a special emoji
+    next_event_time_str = format_time(sorted_event_times[0], fmt)
+    markup.row(f"⏩ {next_event_time_str} (Next)")
+    
+    # Add other times in pairs
+    for i in range(1, len(sorted_event_times), 2):
+        row = []
+        # Add current time
+        time_str = format_time(sorted_event_times[i], fmt)
+        row.append(time_str)
+        
+        # Add next time if exists
+        if i+1 < len(sorted_event_times):
+            time_str2 = format_time(sorted_event_times[i+1], fmt)
+            row.append(time_str2)
+        
         markup.row(*row)
+    
     markup.row('🔙 Wax Events')
     
     bot.send_message(message.chat.id, text, reply_markup=markup)
-    bot.register_next_step_handler(message, ask_reminder_time, event_name)
+    bot.register_next_step_handler(message, ask_reminder_frequency, event_name)
 
-def ask_reminder_time(message, event_type):
+def ask_reminder_frequency(message, event_type):
     # Handle back navigation
     if message.text.strip() == '🔙 Wax Events':
         send_wax_menu(message.chat.id)
         return
         
     try:
-        selected_time = message.text.strip()
-        bot.send_message(
-            message.chat.id, 
-            f"⏰ You selected: {selected_time}\n\n"
-            f"How many minutes before should I remind you?\n"
-            "(e.g., 5 for 5 minutes before)"
-        )
-        bot.register_next_step_handler(message, ask_reminder_frequency, event_type, selected_time)
-    except:
-        bot.send_message(message.chat.id, "Invalid time. Please try again.")
-
-def ask_reminder_frequency(message, event_type, event_time_str):
-    # Handle back navigation
-    if message.text.strip() == '🔙 Wax Events':
-        send_wax_menu(message.chat.id)
-        return
+        # Remove the "(Next)" indicator if present
+        selected_time = message.text.replace("(Next)", "").strip()
         
-    try:
-        mins = int(message.text.strip())
-        if mins < 1 or mins > 60:
-            bot.send_message(message.chat.id, "Please enter a number between 1 and 60")
-            return bot.register_next_step_handler(message, ask_reminder_frequency, event_type, event_time_str)
-            
-        # Save minutes temporarily in message object
-        message.mins_before = mins
+        # Save selected time temporarily
+        message.selected_time = selected_time
         
         # Ask for reminder frequency
         markup = telebot.types.ReplyKeyboardMarkup(resize_keyboard=True)
@@ -331,19 +351,15 @@ def ask_reminder_frequency(message, event_type, event_time_str):
         
         bot.send_message(
             message.chat.id,
-            f"Reminder will be {mins} minutes before event\n\n"
+            f"⏰ You selected: {selected_time}\n\n"
             "Choose reminder frequency:",
             reply_markup=markup
         )
-        bot.register_next_step_handler(message, save_reminder, event_type, event_time_str)
-    except ValueError:
-        bot.send_message(message.chat.id, "Please enter a valid number (e.g., 5, 10)")
-        bot.register_next_step_handler(message, ask_reminder_frequency, event_type, event_time_str)
-    except Exception as e:
-        logger.error(f"Error in reminder setup: {str(e)}")
-        bot.send_message(message.chat.id, "Failed to set reminder. Please try again.")
+        bot.register_next_step_handler(message, ask_reminder_minutes, event_type)
+    except:
+        bot.send_message(message.chat.id, "Invalid selection. Please try again.")
 
-def save_reminder(message, event_type, event_time_str):
+def ask_reminder_minutes(message, event_type):
     # Handle back navigation
     if message.text.strip() == '🔙 Wax Events':
         send_wax_menu(message.chat.id)
@@ -352,14 +368,42 @@ def save_reminder(message, event_type, event_time_str):
     try:
         # Get frequency choice
         if message.text == '⏰ One Time Reminder':
-            is_daily = False
+            message.is_daily = False
         elif message.text == '🔄 Daily Reminder':
-            is_daily = True
+            message.is_daily = True
         else:
             bot.send_message(message.chat.id, "Please select a valid option")
             return
             
-        mins = getattr(message, 'mins_before', 5)  # Default to 5 if not set
+        bot.send_message(
+            message.chat.id, 
+            f"⏰ Event: {event_type}\n"
+            f"🕑 Time: {getattr(message, 'selected_time', 'N/A')}\n"
+            f"🔄 Frequency: {'Daily' if message.is_daily else 'One-time'}\n\n"
+            f"How many minutes before should I remind you?\n"
+            "(e.g., 5 for 5 minutes before)"
+        )
+        bot.register_next_step_handler(message, save_reminder, event_type)
+    except Exception as e:
+        logger.error(f"Error in reminder setup: {str(e)}")
+        bot.send_message(message.chat.id, "Failed to set reminder. Please try again.")
+
+def save_reminder(message, event_type):
+    # Handle back navigation
+    if message.text.strip() == '🔙 Wax Events':
+        send_wax_menu(message.chat.id)
+        return
+        
+    try:
+        mins = int(message.text.strip())
+        if mins < 1 or mins > 60:
+            bot.send_message(message.chat.id, "Please enter a number between 1 and 60")
+            return bot.register_next_step_handler(message, save_reminder, event_type)
+            
+        # Get values stored in message object
+        selected_time = getattr(message, 'selected_time', '')
+        is_daily = getattr(message, 'is_daily', False)
+        
         user = get_user(message.from_user.id)
         if not user: 
             bot.send_message(message.chat.id, "Please set your timezone first with /start")
@@ -370,13 +414,13 @@ def save_reminder(message, event_type, event_time_str):
         now = datetime.now(user_tz)
         
         # Parse time string
-        time_str = event_time_str.replace("AM", "").replace("PM", "").strip()
+        time_str = selected_time.replace("AM", "").replace("PM", "").strip()
         hour, minute = map(int, time_str.split(':'))
         
         # Handle 12-hour format
-        if "PM" in event_time_str and hour != 12:
+        if "PM" in selected_time and hour != 12:
             hour += 12
-        if "AM" in event_time_str and hour == 12:
+        if "AM" in selected_time and hour == 12:
             hour = 0
 
         # Create datetime object in user's timezone
@@ -403,11 +447,14 @@ def save_reminder(message, event_type, event_time_str):
             message.chat.id, 
             f"✅ Reminder set!\n\n"
             f"⏰ Event: {event_type}\n"
-            f"🕑 Time: {event_time_str}\n"
+            f"🕑 Time: {selected_time}\n"
             f"⏱ Remind: {mins} minutes before\n"
             f"{emoji} Frequency: {frequency}"
         )
         send_main_menu(message.chat.id)
+    except ValueError:
+        bot.send_message(message.chat.id, "Please enter a valid number (e.g., 5, 10)")
+        bot.register_next_step_handler(message, save_reminder, event_type)
     except Exception as e:
         logger.error(f"Error saving reminder: {str(e)}")
         bot.send_message(message.chat.id, "Failed to set reminder. Please try again.")
