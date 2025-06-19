@@ -67,6 +67,16 @@ def start(message):
         bot.send_message(message.chat.id, "⚠️ Error in /start")
         print(traceback.format_exc())
 
+def set_timezone(user_id, chat_id, tz):
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                INSERT INTO users (user_id, chat_id, timezone)
+                VALUES (%s, %s, %s)
+                ON CONFLICT (user_id) DO UPDATE SET timezone = EXCLUDED.timezone;
+            """, (user_id, chat_id, tz))
+            conn.commit()
+
 # ========================== TIMEZONE SAVE =======================
 def save_timezone(message):
     try:
