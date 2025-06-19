@@ -1,4 +1,4 @@
-# bot.py — FIXED TIMEZONE SAVING AND BACK BUTTON
+# bot.py — Enhanced UI with Reminder Frequency Options
 import os
 import pytz
 import logging
@@ -53,7 +53,8 @@ def init_db():
                 user_id BIGINT REFERENCES users(user_id),
                 event_type TEXT,
                 event_time_utc TIMESTAMP,
-                notify_before INT
+                notify_before INT,
+                is_daily BOOLEAN DEFAULT FALSE
             );
             """)
             conn.commit()
@@ -92,18 +93,31 @@ def set_time_format(user_id, fmt):
             cur.execute("UPDATE users SET time_format = %s WHERE user_id = %s", (fmt, user_id))
             conn.commit()
 
-# ======================= TELEGRAM UI ===========================
+# ===================== NAVIGATION HELPERS ======================
 def send_main_menu(chat_id):
     markup = telebot.types.ReplyKeyboardMarkup(resize_keyboard=True)
-    markup.row('🕒 Sky Clock', '🕯 Wax')
+    markup.row('🕒 Sky Clock', '🕯 Wax Events')
     markup.row('💎 Shards', '⚙️ Settings')
     bot.send_message(chat_id, "Main Menu:", reply_markup=markup)
 
-# Global back button handler
-@bot.message_handler(func=lambda msg: msg.text == '🔙 Back')
-def handle_back(message):
+def send_wax_menu(chat_id):
+    markup = telebot.types.ReplyKeyboardMarkup(resize_keyboard=True)
+    markup.row('🧓 Grandma', '🐢 Turtle', '🌋 Geyser')
+    markup.row('🔙 Main Menu')
+    bot.send_message(chat_id, "Wax Events:", reply_markup=markup)
+
+def send_settings_menu(chat_id, current_format):
+    markup = telebot.types.ReplyKeyboardMarkup(resize_keyboard=True)
+    markup.row(f'🕰 Change Time Format (Now: {current_format})')
+    markup.row('🔙 Main Menu')
+    bot.send_message(chat_id, "Settings:", reply_markup=markup)
+
+# ======================= GLOBAL HANDLERS =======================
+@bot.message_handler(func=lambda msg: msg.text == '🔙 Main Menu')
+def handle_back_to_main(message):
     send_main_menu(message.chat.id)
 
+# ======================= START FLOW ============================
 @bot.message_handler(commands=['start'])
 def start(message):
     try:
@@ -111,7 +125,8 @@ def start(message):
         markup.row('🇲🇲 Set to Myanmar Time')
         bot.send_message(
             message.chat.id,
-            f"Hello {message.from_user.first_name}! 👋\nPlease type your timezone (e.g. Asia/Yangon), or choose an option:",
+            f"Hello {message.from_user.first_name}! 👋\nWelcome to Sky Clock Bot!\n\n"
+            "Please type your timezone (e.g. Asia/Yangon), or choose an option:",
             reply_markup=markup
         )
         bot.register_next_step_handler(message, save_timezone)
@@ -119,7 +134,6 @@ def start(message):
         logger.error(f"Error in /start: {str(e)}")
         bot.send_message(message.chat.id, "⚠️ Error in /start command")
 
-# ========================== TIMEZONE SAVE =======================
 def save_timezone(message):
     user_id = message.from_user.id
     chat_id = message.chat.id
@@ -145,6 +159,7 @@ def save_timezone(message):
         logger.error(f"Error saving timezone: {str(e)}")
         bot.send_message(chat_id, "⚠️ Unexpected error saving timezone. Please try /start again.")
 
+# ===================== MAIN MENU HANDLERS ======================
 @bot.message_handler(func=lambda msg: msg.text == '🕒 Sky Clock')
 def sky_clock(message):
     user = get_user(message.from_user.id)
@@ -157,24 +172,73 @@ def sky_clock(message):
     now = datetime.now()
     local = now.astimezone(user_tz)
     sky = now.astimezone(SKY_TZ)
-    text = f"🌥 Sky Time: {format_time(sky, fmt)}\n🌍 Your Time: {format_time(local, fmt)}"
+    
+    # Calculate time difference
+    time_diff = local - sky
+    hours, remainder = divmod(abs(time_diff.seconds), 3600)
+    minutes = remainder // 60
+    direction = "ahead" if time_diff.total_seconds() > 0 else "behind"
+    
+    text = (
+        f"🌥 Sky Time: {format_time(sky, fmt)}\n"
+        f"🌍 Your Time: {format_time(local, fmt)}\n"
+        f"⏱ You are {hours}h {minutes}m {direction} Sky Time"
+    )
     bot.send_message(message.chat.id, text)
 
-@bot.message_handler(func=lambda msg: msg.text == '🕯 Wax')
+@bot.message_handler(func=lambda msg: msg.text == '🕯 Wax Events')
 def wax_menu(message):
-    markup = telebot.types.ReplyKeyboardMarkup(resize_keyboard=True)
-    markup.row('🧓 Grandma', '🐢 Turtle', '🌋 Geyser')
-    markup.row('🔙 Back')
-    bot.send_message(message.chat.id, "Choose event:", reply_markup=markup)
+    send_wax_menu(message.chat.id)
 
-@bot.message_handler(func=lambda msg: msg.text in ['🧓 Grandma', '🐢 Turtle', '🌋 Geyser'])
-def handle_event(message):
-    if message.text == '🔙 Back':
-        send_main_menu(message.chat.id)
+@bot.message_handler(func=lambda msg: msg.text == '⚙️ Settings')
+def settings_menu(message):
+    user = get_user(message.from_user.id)
+    if not user: 
+        bot.send_message(message.chat.id, "Please set your timezone first with /start")
         return
         
-    mapping = {'🧓 Grandma': 'grandma', '🐢 Turtle': 'turtle', '🌋 Geyser': 'geyser'}
-    event_type = mapping[message.text]
+    _, fmt = user
+    send_settings_menu(message.chat.id, fmt)
+
+@bot.message_handler(func=lambda msg: msg.text == '💎 Shards')
+def shards_menu(message):
+    user = get_user(message.from_user.id)
+    if not user: 
+        bot.send_message(message.chat.id, "Please set your timezone first with /start")
+        return
+        
+    tz, fmt = user
+    user_tz = pytz.timezone(tz)
+    now = datetime.now(user_tz)
+    
+    # Shard event times (every 2 hours at :05)
+    event_times = []
+    for hour in range(0, 24, 2):
+        event_times.append(now.replace(hour=hour, minute=5, second=0, microsecond=0))
+    
+    # Find next shard event
+    next_event = next((et for et in event_times if et > now), event_times[0] + timedelta(days=1))
+    diff = next_event - now
+    hrs, mins = divmod(diff.seconds // 60, 60)
+    
+    text = (
+        "💎 Shard Events occur every 2 hours at :05\n\n"
+        f"Next Shard Event: {format_time(next_event, fmt)}\n"
+        f"⏳ Time Remaining: {hrs}h {mins}m"
+    )
+    
+    bot.send_message(message.chat.id, text)
+
+# ====================== WAX EVENT HANDLERS =====================
+@bot.message_handler(func=lambda msg: msg.text in ['🧓 Grandma', '🐢 Turtle', '🌋 Geyser'])
+def handle_event(message):
+    mapping = {
+        '🧓 Grandma': ('Grandma', 'every 2 hours at :05', 'even'),
+        '🐢 Turtle': ('Turtle', 'every 2 hours at :20', 'even'),
+        '🌋 Geyser': ('Geyser', 'every 2 hours at :35', 'odd')
+    }
+    
+    event_name, event_schedule, hour_type = mapping[message.text]
     user = get_user(message.from_user.id)
     if not user: 
         bot.send_message(message.chat.id, "Please set your timezone first with /start")
@@ -189,49 +253,113 @@ def handle_event(message):
 
     event_times = []
     for hour in range(24):
-        if event_type == 'grandma' and hour % 2 == 0:
-            event_times.append(today_user.replace(hour=hour, minute=5))
-        elif event_type == 'turtle' and hour % 2 == 0:
-            event_times.append(today_user.replace(hour=hour, minute=20))
-        elif event_type == 'geyser' and hour % 2 == 1:
-            event_times.append(today_user.replace(hour=hour, minute=35))
+        if hour_type == 'even' and hour % 2 == 0:
+            event_times.append(today_user.replace(hour=hour, minute=int(event_schedule.split(':')[1])))
+        elif hour_type == 'odd' and hour % 2 == 1:
+            event_times.append(today_user.replace(hour=hour, minute=int(event_schedule.split(':')[1])))
 
     # Find next event
     next_event = next((et for et in event_times if et > now_user), event_times[0] + timedelta(days=1))
     diff = next_event - now_user
     hrs, mins = divmod(diff.seconds // 60, 60)
-    text = f"Next {event_type.capitalize()} event at {format_time(next_event, fmt)} ({hrs}h {mins}m left)"
+    
+    # Create event description
+    description = {
+        'Grandma': "🕯 Grandma offers wax at Home every 2 hours",
+        'Turtle': "🐢 Dark Turtle appears at Sanctuary Islands every 2 hours",
+        'Geyser': "🌋 Geyser erupts at Vault every 2 hours"
+    }[event_name]
+    
+    text = (
+        f"{description}\n\n"
+        f"⏰ Next Event: {format_time(next_event, fmt)}\n"
+        f"⏳ Time Remaining: {hrs}h {mins}m\n\n"
+        "Choose a time to set a reminder:"
+    )
 
     # Send buttons for all event times
     markup = telebot.types.ReplyKeyboardMarkup(resize_keyboard=True)
-    for et in event_times:
-        markup.row(format_time(et, fmt))
-    markup.row('🔙 Back')
-
-    bot.send_message(message.chat.id, text + "\nChoose a time to get a reminder:", reply_markup=markup)
-    bot.register_next_step_handler(message, ask_reminder_time, event_type)
+    # Group times in pairs for better layout
+    for i in range(0, len(event_times), 2):
+        row = [format_time(event_times[i], fmt)]
+        if i+1 < len(event_times):
+            row.append(format_time(event_times[i+1], fmt))
+        markup.row(*row)
+    markup.row('🔙 Wax Events')
+    
+    bot.send_message(message.chat.id, text, reply_markup=markup)
+    bot.register_next_step_handler(message, ask_reminder_time, event_name)
 
 def ask_reminder_time(message, event_type):
-    # Handle back button
-    if message.text.strip() == '🔙 Back':
-        wax_menu(message)
+    # Handle back navigation
+    if message.text.strip() == '🔙 Wax Events':
+        send_wax_menu(message.chat.id)
         return
         
     try:
         selected_time = message.text.strip()
-        bot.send_message(message.chat.id, f"How many minutes before {selected_time} do you want to be reminded? (e.g. 5, 10)")
-        bot.register_next_step_handler(message, save_reminder, event_type, selected_time)
+        bot.send_message(
+            message.chat.id, 
+            f"⏰ You selected: {selected_time}\n\n"
+            f"How many minutes before should I remind you?\n"
+            "(e.g., 5 for 5 minutes before)"
+        )
+        bot.register_next_step_handler(message, ask_reminder_frequency, event_type, selected_time)
     except:
-        bot.send_message(message.chat.id, "Invalid time.")
+        bot.send_message(message.chat.id, "Invalid time. Please try again.")
 
-def save_reminder(message, event_type, event_time_str):
-    # Handle back button
-    if message.text.strip() == '🔙 Back':
-        wax_menu(message)
+def ask_reminder_frequency(message, event_type, event_time_str):
+    # Handle back navigation
+    if message.text.strip() == '🔙 Wax Events':
+        send_wax_menu(message.chat.id)
         return
         
     try:
         mins = int(message.text.strip())
+        if mins < 1 or mins > 60:
+            bot.send_message(message.chat.id, "Please enter a number between 1 and 60")
+            return bot.register_next_step_handler(message, ask_reminder_frequency, event_type, event_time_str)
+            
+        # Save minutes temporarily in message object
+        message.mins_before = mins
+        
+        # Ask for reminder frequency
+        markup = telebot.types.ReplyKeyboardMarkup(resize_keyboard=True)
+        markup.row('⏰ One Time Reminder')
+        markup.row('🔄 Daily Reminder')
+        markup.row('🔙 Wax Events')
+        
+        bot.send_message(
+            message.chat.id,
+            f"Reminder will be {mins} minutes before event\n\n"
+            "Choose reminder frequency:",
+            reply_markup=markup
+        )
+        bot.register_next_step_handler(message, save_reminder, event_type, event_time_str)
+    except ValueError:
+        bot.send_message(message.chat.id, "Please enter a valid number (e.g., 5, 10)")
+        bot.register_next_step_handler(message, ask_reminder_frequency, event_type, event_time_str)
+    except Exception as e:
+        logger.error(f"Error in reminder setup: {str(e)}")
+        bot.send_message(message.chat.id, "Failed to set reminder. Please try again.")
+
+def save_reminder(message, event_type, event_time_str):
+    # Handle back navigation
+    if message.text.strip() == '🔙 Wax Events':
+        send_wax_menu(message.chat.id)
+        return
+        
+    try:
+        # Get frequency choice
+        if message.text == '⏰ One Time Reminder':
+            is_daily = False
+        elif message.text == '🔄 Daily Reminder':
+            is_daily = True
+        else:
+            bot.send_message(message.chat.id, "Please select a valid option")
+            return
+            
+        mins = getattr(message, 'mins_before', 5)  # Default to 5 if not set
         user = get_user(message.from_user.id)
         if not user: 
             bot.send_message(message.chat.id, "Please set your timezone first with /start")
@@ -262,31 +390,29 @@ def save_reminder(message, event_type, event_time_str):
         with get_db() as conn:
             with conn.cursor() as cur:
                 cur.execute("""
-                INSERT INTO reminders (user_id, event_type, event_time_utc, notify_before)
-                VALUES (%s, %s, %s, %s)
-                """, (message.from_user.id, event_type, event_time_utc, mins))
+                INSERT INTO reminders (user_id, event_type, event_time_utc, notify_before, is_daily)
+                VALUES (%s, %s, %s, %s, %s)
+                """, (message.from_user.id, event_type, event_time_utc, mins, is_daily))
                 conn.commit()
                 
-        bot.send_message(message.chat.id, f"✅ Reminder set for {event_type} at {event_time_str} ({mins} minutes before)")
+        # Format confirmation message
+        frequency = "daily" if is_daily else "one time"
+        emoji = "🔄" if is_daily else "⏰"
+        
+        bot.send_message(
+            message.chat.id, 
+            f"✅ Reminder set!\n\n"
+            f"⏰ Event: {event_type}\n"
+            f"🕑 Time: {event_time_str}\n"
+            f"⏱ Remind: {mins} minutes before\n"
+            f"{emoji} Frequency: {frequency}"
+        )
         send_main_menu(message.chat.id)
     except Exception as e:
         logger.error(f"Error saving reminder: {str(e)}")
         bot.send_message(message.chat.id, "Failed to set reminder. Please try again.")
 
-@bot.message_handler(func=lambda msg: msg.text == '⚙️ Settings')
-def settings_menu(message):
-    user = get_user(message.from_user.id)
-    if not user: 
-        bot.send_message(message.chat.id, "Please set your timezone first with /start")
-        return
-        
-    _, fmt = user
-    new_fmt = '24hr' if fmt == '12hr' else '12hr'
-    markup = telebot.types.ReplyKeyboardMarkup(resize_keyboard=True)
-    markup.row(f'🕰 Change Time Format (Now: {fmt})')
-    markup.row('🔙 Back')
-    bot.send_message(message.chat.id, "Settings:", reply_markup=markup)
-
+# ====================== SETTINGS HANDLERS ======================
 @bot.message_handler(func=lambda msg: msg.text.startswith('🕰 Change Time Format'))
 def change_time_format(message):
     user = get_user(message.from_user.id)
@@ -297,7 +423,7 @@ def change_time_format(message):
     tz, fmt = user
     new_fmt = '24hr' if fmt == '12hr' else '12hr'
     set_time_format(message.from_user.id, new_fmt)
-    bot.send_message(message.chat.id, f"Time format changed to {new_fmt}")
+    bot.send_message(message.chat.id, f"✅ Time format changed to {new_fmt}")
     send_main_menu(message.chat.id)
 
 # ========================== WEBHOOK ============================
