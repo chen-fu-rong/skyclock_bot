@@ -16,12 +16,15 @@ logger = logging.getLogger(__name__)
 API_TOKEN = os.getenv("BOT_TOKEN") or "YOUR_BOT_TOKEN"
 WEBHOOK_URL = os.getenv("WEBHOOK_URL") or "https://skyclock-bot.onrender.com/webhook"
 DB_URL = os.getenv("DATABASE_URL") or "postgresql://user:pass@host:port/db"
-SKY_TZ = pytz.timezone("America/Los_Angeles")
+SKY_TZ = pytz.timezone("America/Los_Angeles")  # Corrected timezone
 
 bot = telebot.TeleBot(API_TOKEN)
 app = Flask(__name__)
 scheduler = BackgroundScheduler()
 scheduler.start()
+
+# ========================== STATE ==============================
+user_sessions = {}
 
 # ========================== DATABASE ===========================
 def get_db():
@@ -134,7 +137,7 @@ def send_main_menu(chat_id):
     markup = telebot.types.ReplyKeyboardMarkup(resize_keyboard=True)
     markup.row('🕒 Sky Clock', '🕯 Wax')
     markup.row('💎 Shards', '⚙️ Settings')
-    bot.send_message(chat_id, "🏠 Main Menu:", reply_markup=markup)
+    bot.send_message(chat极d, "🏠 Main Menu:", reply_markup=markup)
 
 @bot.message_handler(func=lambda msg: msg.text == '🕒 Sky Clock')
 def sky_clock(message):
@@ -164,6 +167,12 @@ def handle_event(message):
     tz, fmt = user
     user_tz = pytz.timezone(tz)
 
+    # Store event type in session
+    user_id = message.from_user.id
+    if user_id not in user_sessions:
+        user_sessions[user_id] = {}
+    user_sessions[user_id]['event_type'] = event_type
+
     # Get next event in user time
     next_event = get_next_event(event_type).astimezone(user_tz)
     now = datetime.now(user_tz)
@@ -171,22 +180,31 @@ def handle_event(message):
     hrs, mins = divmod(diff.seconds // 60, 60)
     text = f"Next {event_type.capitalize()} event at {format_time(next_event, fmt)} ({hrs}h {mins}m left)"
 
-    # Generate list of today's event times
+    # Generate list of today's event times in user's timezone
     markup = telebot.types.ReplyKeyboardMarkup(resize_keyboard=True)
-    now_sky = datetime.now(SKY_TZ).replace(minute=0, second=0, microsecond=0)
+    now_sky = datetime.now(SKY_TZ)
     
-    for h in range(24):
-        if event_type == 'grandma' and h % 2 == 0:
-            sky_event = now_sky.replace(hour=h, minute=5)
-        elif event_type == 'turtle' and h % 2 == 0:
-            sky_event = now_sky.replace(hour=h, minute=20)
-        elif event_type == 'geyser' and h % 2 == 1:
-            sky_event = now_sky.replace(hour=h, minute=35)
+    # Find the next 8 events (4 hours worth)
+    event_times = []
+    for i in range(8):
+        event_time = now_sky + timedelta(hours=i*2)
+        if event_type == 'grandma' and event_time.hour % 2 == 0:
+            event_time = event_time.replace(minute=5, second=0, microsecond=0)
+        elif event_type == 'turtle' and event_time.hour % 2 == 0:
+            event_time = event_time.replace(minute=20, second=0, microsecond=0)
+        elif event_type == 'geyser' and event_time.hour % 2 == 1:
+            event_time = event_time.replace(minute=35, second=0, microsecond=0)
         else:
             continue
             
-        local_time = sky_event.astimezone(user_tz)
-        display = format_time(local_time, fmt)
+        # Convert to user's timezone
+        user_event_time = event_time.astimezone(user_tz)
+        event_times.append(user_event_time)
+    
+    # Sort and format event times
+    event_times.sort()
+    for event_time in event_times:
+        display = format_time(event_time, fmt)
         markup.row(display)
     
     # Add new reminder type buttons
@@ -194,27 +212,35 @@ def handle_event(message):
     markup.row('🔙 Back')
     
     bot.send_message(message.chat.id, text + "\nChoose a time to get a reminder:", reply_markup=markup)
-    bot.register_next_step_handler(message, ask_reminder_type, event_type)
+    bot.register_next_step_handler(message, ask_reminder_type)
 
-def ask_reminder_type(message, event_type):
+def ask_reminder_type(message):
     if message.text == '🔙 Back':
         return wax_menu(message)
-        
+    
+    user_id = message.from_user.id
+    event_type = user_sessions.get(user_id, {}).get('event_type')
+    if not event_type:
+        bot.send_message(message.chat.id, "❌ Session expired. Please start over.")
+        return send_main_menu(message.chat.id)
+    
     # Handle new buttons
     if message.text in ['⏰ One-Time Reminder', '🔄 Daily Reminder']:
         is_daily = (message.text == '🔄 Daily Reminder')
         bot.send_message(message.chat.id, f"⏰ How many minutes before the event do you want to be reminded? (e.g. 5, 10)")
         bot.register_next_step_handler(message, save_reminder, event_type, None, is_daily)
         return
-        
-    try:
-        selected_time = message.text.strip()
-        markup = telebot.types.ReplyKeyboardMarkup(resize_keyboard=True)
-        markup.row('⏰ One-Time', '🔄 Daily')
-        bot.send_message(message.chat.id, f"Select reminder type for {selected_time}:", reply_markup=markup)
-        bot.register_next_step_handler(message, process_reminder_type, event_type, selected_time)
-    except:
-        bot.send_message(message.chat.id, "❌ Invalid time.")
+    
+    # Store selected time in session
+    selected_time = message.text.strip()
+    if user_id not in user_sessions:
+        user_sessions[user_id] = {}
+    user_sessions[user_id]['selected_time'] = selected_time
+    
+    markup = telebot.types.ReplyKeyboardMarkup(resize_keyboard=True)
+    markup.row('⏰ One-Time', '🔄 Daily')
+    bot.send_message(message.chat.id, f"Select reminder type for {selected_time}:", reply_markup=markup)
+    bot.register_next_step_handler(message, process_reminder_type, event_type, selected_time)
 
 def process_reminder_type(message, event_type, selected_time):
     if message.text not in ['⏰ One-Time', '🔄 Daily']:
@@ -229,19 +255,34 @@ def save_reminder(message, event_type, event_time_str, is_daily):
     try:
         mins = int(message.text.strip())
         user = get_user(message.from_user.id)
-        if not user: return
+        if not user: 
+            bot.send_message(message.chat.id, "❌ User not found. Please set your timezone first.")
+            return
+            
         tz, fmt = user
         user_tz = pytz.timezone(tz)
+        user_id = message.from_user.id
         
         if event_time_str:
             # Parse selected time
-            if fmt == '12hr':
-                time_obj = datetime.strptime(event_time_str, '%I:%M %p').time()
-            else:
-                time_obj = datetime.strptime(event_time_str, '%H:%M').time()
+            try:
+                if fmt == '12hr':
+                    time_obj = datetime.strptime(event_time_str, '%I:%M %p').time()
+                else:
+                    time_obj = datetime.strptime(event_time_str, '%H:%M').time()
+            except ValueError:
+                bot.send_message(message.chat.id, "❌ Invalid time format. Please try again.")
+                return
                 
-            today = datetime.now(user_tz).replace(hour=time_obj.hour, minute=time_obj.minute)
-            event_time_utc = today.astimezone(pytz.utc)
+            # Get today's date in user's timezone
+            now_user = datetime.now(user_tz)
+            event_time_user = now_user.replace(hour=time_obj.hour, minute=time_obj.minute, second=0, microsecond=0)
+            
+            # If the time has already passed today, use tomorrow
+            if event_time_user < now_user:
+                event_time_user += timedelta(days=1)
+                
+            event_time_utc = event_time_user.astimezone(pytz.utc)
         else:
             # Use next event
             next_event = get_next_event(event_type)
@@ -258,7 +299,7 @@ def save_reminder(message, event_type, event_time_str, is_daily):
         schedule_reminder(message.chat.id, event_time_utc, mins, event_type, is_daily)
         bot.send_message(message.chat.id, f"✅ {'Daily' if is_daily else 'One-time'} reminder set! ({mins} minutes before)")
     except Exception as e:
-        logging.error(f"Error saving reminder: {e}")
+        logger.error(f"Error saving reminder: {str(e)}", exc_info=True)
         bot.send_message(message.chat.id, "❌ Failed to set reminder. Please try again.")
 
 def schedule_reminder(chat_id, event_time_utc, mins, event_type, is_daily):
@@ -320,7 +361,7 @@ def reschedule_reminders():
                     schedule_reminder(chat_id, event_time_utc, notify_before, event_type, is_daily)
         logger.info("Rescheduled existing reminders")
     except Exception as e:
-        logger.error(f"Error rescheduling reminders: {e}")
+        logger.error(f"Error rescheduling reminders: {str(e)}", exc_info=True)
 
 # ========================== MAIN ===============================
 if __name__ == '__main__':
