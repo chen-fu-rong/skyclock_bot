@@ -67,18 +67,11 @@ def start(message):
         bot.send_message(message.chat.id, "⚠️ Error in /start")
         print(traceback.format_exc())
 
-def set_timezone(user_id, chat_id, tz):
-    with get_db() as conn:
-        with conn.cursor() as cur:
-            cur.execute("""
-                INSERT INTO users (user_id, chat_id, timezone)
-                VALUES (%s, %s, %s)
-                ON CONFLICT (user_id) DO UPDATE SET timezone = EXCLUDED.timezone;
-            """, (user_id, chat_id, tz))
-            conn.commit()
-
 # ========================== TIMEZONE SAVE =======================
 def save_timezone(message):
+    from_user = message.from_user
+    user_id = from_user.id
+    chat_id = message.chat.id
     try:
         if message.text == '🇲🇲 Set to Myanmar Time':
             tz = 'Asia/Yangon'
@@ -90,7 +83,7 @@ def save_timezone(message):
                 bot.send_message(message.chat.id, "❌ Invalid timezone. Please try again:")
                 return bot.register_next_step_handler(message, save_timezone)
 
-        set_timezone(message.from_user.id, message.chat.id, tz)
+        set_timezone(user_id, chat_id, tz)
         bot.send_message(message.chat.id, f"✅ Timezone set to: {tz}")
         send_main_menu(message.chat.id)
     except Exception as e:
