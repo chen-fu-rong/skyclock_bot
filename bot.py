@@ -92,6 +92,17 @@ def set_time_format(user_id, fmt):
             conn.commit()
 
 # ======================= TELEGRAM UI ===========================
+@bot.message_handler(func=lambda m: m.text and m.text.count(':') == 1)
+def handle_event_time_selection(message):
+    user_id = message.from_user.id
+    if user_id not in user_sessions or 'event_type' not in user_sessions[user_id]:
+        return
+    selected_time = message.text.strip()
+    if selected_time == '🔙 Back':
+        return send_main_menu(message.chat.id)
+    user_sessions[user_id]['event_time'] = selected_time
+    bot.send_message(message.chat.id, f"⏰ How many minutes before {selected_time} do you want to be reminded? (e.g. 5, 10)")
+    bot.register_next_step_handler(message, ask_reminder_type)
 @bot.message_handler(commands=['start'])
 def start(message):
     markup = telebot.types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
@@ -141,6 +152,7 @@ def wax_menu(message):
 
 @bot.message_handler(func=lambda msg: msg.text in ['🧓 Grandma', '🐢 Turtle', '🌋 Geyser'])
 def handle_event(message):
+    user_sessions[message.from_user.id] = {}
     mapping = {'🧓 Grandma': 'grandma', '🐢 Turtle': 'turtle', '🌋 Geyser': 'geyser'}
     event_type = mapping[message.text]
     user = get_user(message.from_user.id)
