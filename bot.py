@@ -292,9 +292,9 @@ def handle_event(message):
     
     # Create event description
     description = {
-        'Grandma': "🕯 Grandma offers wax at Home every 2 hours",
+        'Grandma': "🕯 Grandma offers wax at Hidden Forest every 2 hours",
         'Turtle': "🐢 Dark Turtle appears at Sanctuary Islands every 2 hours",
-        'Geyser': "🌋 Geyser erupts at Vault every 2 hours"
+        'Geyser': "🌋 Geyser erupts at Sanctuary Islands every 2 hours"
     }[event_name]
     
     text = (
