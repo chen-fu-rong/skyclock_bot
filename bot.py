@@ -474,39 +474,19 @@ def save_reminder(message, event_type):
         return
         
     try:
+        # Handle empty input
+        if not message.text or not message.text.strip():
+            raise ValueError("Empty input received")
+            
         # Check if input is a number
         try:
             mins = int(message.text.strip())
         except ValueError:
-            bot.send_message(message.chat.id, "❌ Please enter a number between 1 and 60")
-            # Re-ask for minutes with keyboard
-            markup = telebot.types.ReplyKeyboardMarkup(resize_keyboard=True)
-            markup.row('5', '10', '15')
-            markup.row('20', '30', '45')
-            markup.row('60', '🔙 Wax Events')
-            bot.send_message(
-                message.chat.id, 
-                "Please choose a valid number (1-60):",
-                reply_markup=markup
-            )
-            bot.register_next_step_handler(message, save_reminder, event_type)
-            return
+            raise ValueError("Please enter a valid number")
             
         # Validate range
         if mins < 1 or mins > 60:
-            bot.send_message(message.chat.id, "❌ Please enter a number between 1 and 60")
-            # Re-ask for minutes with keyboard
-            markup = telebot.types.ReplyKeyboardMarkup(resize_keyboard=True)
-            markup.row('5', '10', '15')
-            markup.row('20', '30', '45')
-            markup.row('60', '🔙 Wax Events')
-            bot.send_message(
-                message.chat.id, 
-                "Please choose a valid number (1-60):",
-                reply_markup=markup
-            )
-            bot.register_next_step_handler(message, save_reminder, event_type)
-            return
+            raise ValueError("Please enter a number between 1 and 60")
             
         # Get values stored in message object
         selected_time = getattr(message, 'selected_time', '')
@@ -570,9 +550,32 @@ def save_reminder(message, event_type):
             f"{emoji} Frequency: {frequency}"
         )
         send_main_menu(message.chat.id, message.from_user.id)
+        
+    except ValueError as e:
+        error_msg = str(e)
+        if "Empty input" in error_msg:
+            error_msg = "❌ You didn't enter anything. Please enter a number between 1 and 60"
+        elif "valid number" in error_msg:
+            error_msg = "❌ Please enter a valid number (e.g., 5, 10)"
+        else:
+            error_msg = "❌ Please enter a number between 1 and 60"
+            
+        # Re-ask for minutes with keyboard
+        markup = telebot.types.ReplyKeyboardMarkup(resize_keyboard=True)
+        markup.row('5', '10', '15')
+        markup.row('20', '30', '45')
+        markup.row('60', '🔙 Wax Events')
+        bot.send_message(
+            message.chat.id, 
+            error_msg,
+            reply_markup=markup
+        )
+        bot.register_next_step_handler(message, save_reminder, event_type)
+        
     except Exception as e:
         logger.error(f"Error saving reminder: {str(e)}")
-        bot.send_message(message.chat.id, "Failed to set reminder. Please try again.")
+        bot.send_message(message.chat.id, "⚠️ Failed to set reminder. Please try again from the beginning.")
+        send_wax_menu(message.chat.id)
 
 # ==================== REMINDER SCHEDULING =====================
 def schedule_reminder(user_id, reminder_id, event_type, event_time_utc, notify_before, is_daily):
