@@ -1,4 +1,4 @@
-# bot.py - Enhanced with Shard Prediction
+# bot.py - Fixed Version with Reminder Flow Fixes
 import os
 import pytz
 import logging
@@ -38,64 +38,6 @@ start_time = datetime.now()
 
 # Sky timezone
 SKY_TZ = pytz.timezone('UTC')
-
-# ======================= SHARD DATA ===========================
-# Define shard cycle based on prediction rules
-SHARD_CYCLE = [
-    {"type": "black", "location": {"map": "Prairie", "place": "Caves"}},
-    {"type": "black", "location": {"map": "Prairie", "place": "Village"}},
-    {"type": "black", "location": {"map": "Prairie", "place": "Island"}},
-    {"type": "red", "location": {"map": "Forest", "place": "Boneyard"}},
-    {"type": "red", "location": {"map": "Forest", "place": "Broken Bridge"}},
-    {"type": "black", "location": {"map": "Forest", "place": "Broken Temple"}},
-    {"type": "red", "location": {"map": "Valley", "place": "Village"}},
-    {"type": "red", "location": {"map": "Valley", "place": "Ice Rink"}},
-    {"type": "black", "location": {"map": "Wasteland", "place": "Battlefield"}},
-    {"type": "red", "location": {"map": "Wasteland", "place": "Graveyard"}},
-    {"type": "black", "location": {"map": "Wasteland", "place": "Crab Field"}},
-    {"type": "red", "location": {"map": "Vault", "place": "Starlight Desert"}}
-]
-
-# Base time for shard cycle calculations
-SHARD_BASE_TIME = datetime(2023, 7, 10, 0, 5, tzinfo=pytz.utc)
-
-def get_current_shard_index():
-    """Calculate current position in the shard cycle"""
-    now = datetime.now(pytz.utc)
-    total_seconds = (now - SHARD_BASE_TIME).total_seconds()
-    slot_index = total_seconds // (2 * 3600)  # Each slot is 2 hours
-    return int(slot_index % 12)
-
-def get_current_shard():
-    """Get current shard information"""
-    index = get_current_shard_index()
-    return SHARD_CYCLE[index]
-
-def get_shard_status():
-    """Get current shard active status and timing"""
-    now_utc = datetime.now(pytz.utc)
-    index = get_current_shard_index()
-    
-    # Calculate start time of current shard occurrence
-    slot_duration = index * 2 * 3600  # Hours to seconds
-    shard_start = SHARD_BASE_TIME + timedelta(seconds=slot_duration)
-    
-    # Adjust to most recent occurrence
-    while shard_start > now_utc:
-        shard_start -= timedelta(hours=24)
-    
-    shard_end = shard_start + timedelta(minutes=50)
-    
-    # Check if shard is currently active
-    is_active = shard_start <= now_utc < shard_end
-    time_remaining = shard_end - now_utc if is_active else None
-    
-    return {
-        "start": shard_start,
-        "end": shard_end,
-        "is_active": is_active,
-        "time_remaining": time_remaining
-    }
 
 # ========================== DATABASE ===========================
 def get_db():
@@ -156,13 +98,6 @@ def init_db():
 # ======================== UTILITIES ============================
 def format_time(dt, fmt):
     return dt.strftime('%I:%M %p') if fmt == '12hr' else dt.strftime('%H:%M')
-
-def format_timedelta(td):
-    """Format timedelta to hours and minutes"""
-    total_seconds = int(td.total_seconds())
-    hours, remainder = divmod(total_seconds, 3600)
-    minutes = remainder // 60
-    return f"{hours}h {minutes}m"
 
 def get_user(user_id):
     with get_db() as conn:
@@ -355,27 +290,6 @@ def shards_menu(message):
     tz, fmt = user
     user_tz = pytz.timezone(tz)
     now = datetime.now(user_tz)
-    now_utc = datetime.now(pytz.utc)
-    
-    # Get current shard information
-    current_shard = get_current_shard()
-    shard_status = get_shard_status()
-    
-    # Format shard type with emoji
-    shard_type_emoji = "🔴" if current_shard["type"] == "red" else "⚫️"
-    shard_type_text = "Red Shard" if current_shard["type"] == "red" else "Black Shard"
-    
-    # Format active status
-    if shard_status["is_active"]:
-        active_status = f"✅ Active Now (ends in {format_timedelta(shard_status['time_remaining'])})"
-    else:
-        next_active = shard_status["start"] + timedelta(hours=24)  # Next occurrence
-        time_until_active = next_active - now_utc
-        active_status = f"❌ Not Active (next in {format_timedelta(time_until_active)})"
-    
-    # Format shard times in user's timezone
-    shard_start_user = shard_status["start"].astimezone(user_tz)
-    shard_end_user = shard_status["end"].astimezone(user_tz)
     
     # Shard event times (every 2 hours at :05)
     event_times = []
@@ -387,33 +301,13 @@ def shards_menu(message):
     diff = next_event - now
     hrs, mins = divmod(diff.seconds // 60, 60)
     
-    # Build message text
     text = (
-        f"{shard_type_emoji} *Current Shard*\n"
-        f"Type: {shard_type_text}\n"
-        f"Location: {current_shard['location']['map']} - {current_shard['location']['place']}\n"
-        f"Status: {active_status}\n"
-        f"Start: {format_time(shard_start_user, fmt)}\n"
-        f"End: {format_time(shard_end_user, fmt)}\n\n"
-        f"💎 *Next Shard Event*\n"
-        f"Time: {format_time(next_event, fmt)}\n"
-        f"⏳ Time Remaining: {hrs}h {mins}m\n\n"
-        f"Shard events occur every 2 hours at XX:05"
+        "💎 Shard Events occur every 2 hours at :05\n\n"
+        f"Next Shard Event: {format_time(next_event, fmt)}\n"
+        f"⏳ Time Remaining: {hrs}h {mins}m"
     )
     
-    # Add button for full schedule
-    markup = telebot.types.InlineKeyboardMarkup()
-    markup.add(telebot.types.InlineKeyboardButton(
-        text="View Full Schedule", 
-        url="https://sky-shards.pages.dev/en"
-    ))
-    
-    bot.send_message(
-        message.chat.id, 
-        text, 
-        parse_mode="Markdown",
-        reply_markup=markup
-    )
+    bot.send_message(message.chat.id, text)
 
 # ====================== WAX EVENT HANDLERS =====================
 @bot.message_handler(func=lambda msg: msg.text in ['🧓 Grandma', '🐢 Turtle', '🌋 Geyser'])
@@ -443,12 +337,6 @@ def handle_event(message):
             event_times.append(today_user.replace(hour=hour, minute=int(event_schedule.split(':')[1])))
         elif hour_type == 'odd' and hour % 2 == 1:
             event_times.append(today_user.replace(hour=hour, minute=int(event_schedule.split(':')[1])))
-        elif hour_type == 'even' and hour % 2 == 1:
-            # Skip odd hours
-            continue
-        elif hour_type == 'odd' and hour % 2 == 0:
-            # Skip even hours
-            continue
 
     # Calculate next occurrences for each event time
     next_occurrences = []
@@ -582,6 +470,12 @@ def ask_reminder_minutes(message, event_type, selected_time):
 
 import re
 
+# bot.py - Fixed Version with Reminder Flow Fixes
+# ... [code unchanged until inside save_reminder() function] ...
+
+# bot.py - Enhanced with Debug Logs in save_reminder()
+# ... [unchanged code above] ...
+
 def save_reminder(message, event_type, selected_time, is_daily):
     update_last_interaction(message.from_user.id)
     if message.text.strip() == '🔙 Wax Events':
@@ -653,17 +547,20 @@ def save_reminder(message, event_type, selected_time, is_daily):
 
         with get_db() as conn:
             with conn.cursor() as cur:
+                chat_id = message.chat.id  # Add this line before the query
+
                 cur.execute("""
                 INSERT INTO reminders (
-                    user_id, event_type, event_time_utc, trigger_time,
+                    user_id, chat_id, event_type, event_time_utc, trigger_time,
                     notify_before, is_daily, created_at
                 )
-                VALUES (%s, %s, %s, %s, %s, %s, NOW())
+                VALUES (%s, %s, %s, %s, %s, %s, %s, NOW())
                 RETURNING id
                 """, (
-                    message.from_user.id, event_type, event_time_utc,
+                    message.from_user.id, chat_id, event_type, event_time_utc,
                     trigger_time, mins, is_daily
-                ))
+                    ))
+
                 reminder_id = cur.fetchone()[0]
                 conn.commit()
 
@@ -707,6 +604,10 @@ def save_reminder(message, event_type, selected_time, is_daily):
             "⚠️ Failed to set reminder. Please try again later."
         )
         send_main_menu(message.chat.id, message.from_user.id)
+
+# ... rest of code unchanged ...
+
+
 
 # ==================== REMINDER SCHEDULING =====================
 def schedule_reminder(user_id, reminder_id, event_type, event_time_utc, notify_before, is_daily):
