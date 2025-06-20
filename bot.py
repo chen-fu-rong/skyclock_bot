@@ -473,6 +473,9 @@ import re
 # bot.py - Fixed Version with Reminder Flow Fixes
 # ... [code unchanged until inside save_reminder() function] ...
 
+# bot.py - Enhanced with Debug Logs in save_reminder()
+# ... [unchanged code above] ...
+
 def save_reminder(message, event_type, selected_time, is_daily):
     update_last_interaction(message.from_user.id)
     if message.text.strip() == '🔙 Wax Events':
@@ -528,15 +531,20 @@ def save_reminder(message, event_type, selected_time, is_daily):
             microsecond=0
         )
 
-        # Adjust date if time has already passed
         if event_time_user < now:
             event_time_user += timedelta(days=1)
 
-        # Convert to UTC
         event_time_utc = event_time_user.astimezone(pytz.utc)
         trigger_time = event_time_utc - timedelta(minutes=mins)
 
-        # Save to database
+        logger.info(f"[DEBUG] Trying to insert reminder: "
+                    f"user_id={message.from_user.id}, "
+                    f"event_type={event_type}, "
+                    f"event_time_utc={event_time_utc}, "
+                    f"trigger_time={trigger_time}, "
+                    f"notify_before={mins}, "
+                    f"is_daily={is_daily}")
+
         with get_db() as conn:
             with conn.cursor() as cur:
                 cur.execute("""
@@ -553,7 +561,6 @@ def save_reminder(message, event_type, selected_time, is_daily):
                 reminder_id = cur.fetchone()[0]
                 conn.commit()
 
-        # Schedule reminder
         schedule_reminder(message.from_user.id, reminder_id, event_type,
                           event_time_utc, mins, is_daily)
 
@@ -588,13 +595,15 @@ def save_reminder(message, event_type, selected_time, is_daily):
         bot.register_next_step_handler(message, save_reminder, event_type, selected_time, is_daily)
 
     except Exception as e:
-        logger.error(f"Reminder save failed: {str(e)}")
-        logger.error(traceback.format_exc())
+        logger.error("Reminder save failed", exc_info=True)
         bot.send_message(
             message.chat.id,
             "⚠️ Failed to set reminder. Please try again later."
         )
         send_main_menu(message.chat.id, message.from_user.id)
+
+# ... rest of code unchanged ...
+
 
 
 # ==================== REMINDER SCHEDULING =====================
