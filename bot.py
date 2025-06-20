@@ -1,4 +1,4 @@
-# bot.py — Enhanced with Admin Panel and Robust DB Handling
+# bot.py - Complete Reminder System with Database Fixes
 import os
 import pytz
 import logging
@@ -43,7 +43,6 @@ SKY_TZ = pytz.timezone('UTC')
 def get_db():
     try:
         conn = psycopg2.connect(DB_URL, sslmode='require')
-        logger.info("Database connection successful")
         return conn
     except Exception as e:
         logger.error(f"Database connection failed: {str(e)}")
@@ -58,23 +57,12 @@ def init_db():
                 user_id BIGINT PRIMARY KEY,
                 chat_id BIGINT NOT NULL,
                 timezone TEXT NOT NULL,
-                time_format TEXT DEFAULT '12hr'
+                time_format TEXT DEFAULT '12hr',
+                last_interaction TIMESTAMP DEFAULT NOW()
             );
             """)
             
-            # Add last_interaction column if not exists
-            try:
-                cur.execute("""
-                ALTER TABLE users 
-                ADD COLUMN IF NOT EXISTS last_interaction TIMESTAMP DEFAULT NOW();
-                """)
-                conn.commit()
-                logger.info("Ensured last_interaction column exists")
-            except Exception as e:
-                logger.error(f"Error adding last_interaction column: {str(e)}")
-                conn.rollback()
-            
-            # Create reminders table if not exists
+            # Create reminders table if not exists with created_at column
             cur.execute("""
             CREATE TABLE IF NOT EXISTS reminders (
                 id SERIAL PRIMARY KEY,
@@ -82,21 +70,28 @@ def init_db():
                 event_type TEXT,
                 event_time_utc TIMESTAMP,
                 notify_before INT,
-                created_at TIMESTAMP DEFAULT NOW()
+                is_daily BOOLEAN DEFAULT FALSE,
+                created_at TIMESTAMP DEFAULT NOW()  -- Ensure created_at exists
             );
             """)
             
-            # Add is_daily column if not exists
+            # Add any missing columns
+            try:
+                cur.execute("""
+                ALTER TABLE reminders 
+                ADD COLUMN IF NOT EXISTS created_at TIMESTAMP DEFAULT NOW();
+                """)
+                logger.info("Ensured created_at column exists in reminders")
+            except Exception as e:
+                logger.error(f"Error ensuring created_at column: {str(e)}")
+            
             try:
                 cur.execute("""
                 ALTER TABLE reminders 
                 ADD COLUMN IF NOT EXISTS is_daily BOOLEAN DEFAULT FALSE;
                 """)
-                conn.commit()
-                logger.info("Ensured is_daily column exists")
-            except Exception as e:
-                logger.error(f"Error adding is_daily column: {str(e)}")
-                conn.rollback()
+            except:
+                pass  # Already exists
             
             conn.commit()
 
@@ -511,10 +506,20 @@ def save_reminder(message, event_type):
         with get_db() as conn:
             with conn.cursor() as cur:
                 cur.execute("""
-                INSERT INTO reminders (user_id, event_type, event_time_utc, notify_before, is_daily)
-                VALUES (%s, %s, %s, %s, %s)
+                INSERT INTO reminders (user_id, event_type, event_time_utc, notify_before, is_daily, created_at)
+                VALUES (%s, %s, %s, %s, %s, NOW())
+                RETURNING id
                 """, (message.from_user.id, event_type, event_time_utc, mins, is_daily))
+                reminder_id = cur.fetchone()[0]
                 conn.commit()
+                
+        # Log reminder details
+        logger.info(f"Reminder set: ID={reminder_id}, User={message.from_user.id}, "
+                    f"Event={event_type}, Time={event_time_utc}, NotifyBefore={mins} mins")
+        
+        # Schedule the reminder
+        schedule_reminder(message.from_user.id, reminder_id, event_type, 
+                          event_time_utc, mins, is_daily)
                 
         # Format confirmation message
         frequency = "daily" if is_daily else "one time"
@@ -536,20 +541,94 @@ def save_reminder(message, event_type):
         logger.error(f"Error saving reminder: {str(e)}")
         bot.send_message(message.chat.id, "Failed to set reminder. Please try again.")
 
-# ====================== SETTINGS HANDLERS ======================
-@bot.message_handler(func=lambda msg: msg.text.startswith('🕰 Change Time Format'))
-def change_time_format(message):
-    update_last_interaction(message.from_user.id)
-    user = get_user(message.from_user.id)
-    if not user: 
-        bot.send_message(message.chat.id, "Please set your timezone first with /start")
-        return
+# ==================== REMINDER SCHEDULING =====================
+def schedule_reminder(user_id, reminder_id, event_type, event_time_utc, notify_before, is_daily):
+    try:
+        # Calculate when to send the notification (UTC)
+        notify_time = event_time_utc - timedelta(minutes=notify_before)
+        current_time = datetime.now(pytz.utc)
         
-    tz, fmt = user
-    new_fmt = '24hr' if fmt == '12hr' else '12hr'
-    set_time_format(message.from_user.id, new_fmt)
-    bot.send_message(message.chat.id, f"✅ Time format changed to {new_fmt}")
-    send_main_menu(message.chat.id, message.from_user.id)
+        # If notification time is in the past, adjust for daily or skip
+        if notify_time < current_time:
+            if is_daily:
+                notify_time += timedelta(days=1)
+                event_time_utc += timedelta(days=1)
+                # Update database with new time
+                with get_db() as conn:
+                    with conn.cursor() as cur:
+                        cur.execute("""
+                            UPDATE reminders 
+                            SET event_time_utc = %s 
+                            WHERE id = %s
+                        """, (event_time_utc, reminder_id))
+                        conn.commit()
+            else:
+                logger.warning(f"Reminder {reminder_id} is in the past, skipping")
+                return
+        
+        # Schedule the job
+        scheduler.add_job(
+            send_reminder_notification,
+            'date',
+            run_date=notify_time,
+            args=[user_id, reminder_id, event_type, event_time_utc, notify_before, is_daily],
+            id=f'rem_{reminder_id}'
+        )
+        
+        logger.info(f"Scheduled reminder: ID={reminder_id}, RunAt={notify_time}, "
+                    f"EventTime={event_time_utc}, NotifyBefore={notify_before} mins")
+        
+    except Exception as e:
+        logger.error(f"Error scheduling reminder {reminder_id}: {str(e)}")
+
+def send_reminder_notification(user_id, reminder_id, event_type, event_time_utc, notify_before, is_daily):
+    try:
+        # Get user info
+        user_info = get_user(user_id)
+        if not user_info:
+            logger.warning(f"User {user_id} not found for reminder {reminder_id}")
+            return
+            
+        tz, fmt = user_info
+        user_tz = pytz.timezone(tz)
+        
+        # Convert event time to user's timezone
+        event_time_user = event_time_utc.astimezone(user_tz)
+        event_time_str = format_time(event_time_user, fmt)
+        
+        # Prepare message
+        message = (
+            f"⏰ Reminder: {event_type} is starting in {notify_before} minutes!\n"
+            f"🕑 Event Time: {event_time_str}"
+        )
+        
+        # Send message
+        bot.send_message(user_id, message)
+        logger.info(f"Sent reminder for {event_type} to user {user_id}")
+        
+        # Reschedule if daily
+        if is_daily:
+            new_event_time = event_time_utc + timedelta(days=1)
+            schedule_reminder(user_id, reminder_id, event_type, 
+                             new_event_time, notify_before, True)
+            
+            # Update database
+            with get_db() as conn:
+                with conn.cursor() as cur:
+                    cur.execute("""
+                        UPDATE reminders 
+                        SET event_time_utc = %s 
+                        WHERE id = %s
+                    """, (new_event_time, reminder_id))
+                    conn.commit()
+                    
+    except Exception as e:
+        logger.error(f"Error sending reminder {reminder_id}: {str(e)}")
+        # Attempt to notify admin
+        try:
+            bot.send_message(ADMIN_USER_ID, f"⚠️ Reminder failed: {reminder_id}\nError: {str(e)}")
+        except:
+            pass
 
 # ======================= ADMIN PANEL ===========================
 @bot.message_handler(func=lambda msg: msg.text == '👤 Admin Panel' and is_admin(msg.from_user.id))
@@ -754,6 +833,14 @@ def handle_reminder_action(message, reminders):
                 with conn.cursor() as cur:
                     cur.execute("DELETE FROM reminders WHERE id = %s", (rem_id,))
                     conn.commit()
+                    
+            # Also remove from scheduler if exists
+            try:
+                scheduler.remove_job(f'rem_{rem_id}')
+                logger.info(f"Removed job for reminder {rem_id}")
+            except:
+                pass
+                
             bot.send_message(message.chat.id, "✅ Reminder deleted")
         else:
             bot.send_message(message.chat.id, "Invalid selection")
@@ -882,6 +969,23 @@ if __name__ == '__main__':
     logger.info("Initializing database...")
     init_db()
     logger.info("Database initialized")
+    
+    # Schedule existing reminders on startup
+    logger.info("Scheduling existing reminders...")
+    try:
+        with get_db() as conn:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    SELECT id, user_id, event_type, event_time_utc, notify_before, is_daily
+                    FROM reminders
+                    WHERE event_time_utc > NOW() - INTERVAL '1 day'
+                """)
+                reminders = cur.fetchall()
+                for rem in reminders:
+                    schedule_reminder(rem[1], rem[0], rem[2], rem[3], rem[4], rem[5])
+                logger.info(f"Scheduled {len(reminders)} existing reminders")
+    except Exception as e:
+        logger.error(f"Error scheduling existing reminders: {str(e)}")
     
     logger.info("Setting up webhook...")
     bot.remove_webhook()
