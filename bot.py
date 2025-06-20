@@ -1,4 +1,4 @@
-# bot.py — Enhanced with Admin Panel
+# bot.py — Enhanced with Admin Panel and Robust DB Handling
 import os
 import pytz
 import logging
@@ -26,7 +26,7 @@ logger = logging.getLogger(__name__)
 API_TOKEN = os.getenv("BOT_TOKEN") or "YOUR_BOT_TOKEN"
 WEBHOOK_URL = os.getenv("WEBHOOK_URL") or "https://skyclock-bot.onrender.com/webhook"
 DB_URL = os.getenv("DATABASE_URL") or "postgresql://user:pass@host:port/db"
-ADMIN_USER_ID = os.getenv("ADMIN_USER_ID") or "YOUR_ADMIN_USER_ID"  # New admin ID
+ADMIN_USER_ID = os.getenv("ADMIN_USER_ID") or "YOUR_ADMIN_USER_ID"
 
 bot = telebot.TeleBot(API_TOKEN)
 app = Flask(__name__)
@@ -37,7 +37,7 @@ scheduler.start()
 start_time = datetime.now()
 
 # Sky timezone
-SKY_TZ = pytz.timezone('UTC')  # Sky clock uses UTC
+SKY_TZ = pytz.timezone('UTC')
 
 # ========================== DATABASE ===========================
 def get_db():
@@ -58,28 +58,45 @@ def init_db():
                 user_id BIGINT PRIMARY KEY,
                 chat_id BIGINT NOT NULL,
                 timezone TEXT NOT NULL,
-                time_format TEXT DEFAULT '12hr',
-                last_interaction TIMESTAMP DEFAULT NOW()
+                time_format TEXT DEFAULT '12hr'
             );
             """)
             
-            # Create reminders table if not exists
+            # Add last_interaction column if not exists
             try:
                 cur.execute("""
-                CREATE TABLE IF NOT EXISTS reminders (
-                    id SERIAL PRIMARY KEY,
-                    user_id BIGINT REFERENCES users(user_id),
-                    event_type TEXT,
-                    event_time_utc TIMESTAMP,
-                    notify_before INT,
-                    is_daily BOOLEAN DEFAULT FALSE,
-                    created_at TIMESTAMP DEFAULT NOW()
-                );
+                ALTER TABLE users 
+                ADD COLUMN IF NOT EXISTS last_interaction TIMESTAMP DEFAULT NOW();
                 """)
-            except psycopg2_errors.DuplicateColumn:
-                # This is safe to ignore - column already exists
+                conn.commit()
+                logger.info("Ensured last_interaction column exists")
+            except Exception as e:
+                logger.error(f"Error adding last_interaction column: {str(e)}")
                 conn.rollback()
-                logger.info("is_daily column already exists in reminders table")
+            
+            # Create reminders table if not exists
+            cur.execute("""
+            CREATE TABLE IF NOT EXISTS reminders (
+                id SERIAL PRIMARY KEY,
+                user_id BIGINT REFERENCES users(user_id),
+                event_type TEXT,
+                event_time_utc TIMESTAMP,
+                notify_before INT,
+                created_at TIMESTAMP DEFAULT NOW()
+            );
+            """)
+            
+            # Add is_daily column if not exists
+            try:
+                cur.execute("""
+                ALTER TABLE reminders 
+                ADD COLUMN IF NOT EXISTS is_daily BOOLEAN DEFAULT FALSE;
+                """)
+                conn.commit()
+                logger.info("Ensured is_daily column exists")
+            except Exception as e:
+                logger.error(f"Error adding is_daily column: {str(e)}")
+                conn.rollback()
             
             conn.commit()
 
@@ -114,14 +131,27 @@ def set_timezone(user_id, chat_id, tz):
 def set_time_format(user_id, fmt):
     with get_db() as conn:
         with conn.cursor() as cur:
-            cur.execute("UPDATE users SET time_format = %s, last_interaction = NOW() WHERE user_id = %s", (fmt, user_id))
+            cur.execute("""
+                UPDATE users 
+                SET time_format = %s, last_interaction = NOW() 
+                WHERE user_id = %s
+            """, (fmt, user_id))
             conn.commit()
 
 def update_last_interaction(user_id):
-    with get_db() as conn:
-        with conn.cursor() as cur:
-            cur.execute("UPDATE users SET last_interaction = NOW() WHERE user_id = %s", (user_id,))
-            conn.commit()
+    try:
+        with get_db() as conn:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    UPDATE users 
+                    SET last_interaction = NOW() 
+                    WHERE user_id = %s
+                """, (user_id,))
+                conn.commit()
+        return True
+    except Exception as e:
+        logger.error(f"Error updating last interaction for {user_id}: {str(e)}")
+        return False
 
 # ===================== ADMIN UTILITIES =========================
 def is_admin(user_id):
@@ -133,7 +163,6 @@ def send_main_menu(chat_id, user_id=None):
     markup.row('🕒 Sky Clock', '🕯 Wax Events')
     markup.row('💎 Shards', '⚙️ Settings')
     
-    # Add Admin Panel button only for admin
     if user_id and is_admin(user_id):
         markup.row('👤 Admin Panel')
     
@@ -155,7 +184,7 @@ def send_admin_menu(chat_id):
     markup = telebot.types.ReplyKeyboardMarkup(resize_keyboard=True)
     markup.row('👥 User Stats', '📢 Broadcast')
     markup.row('⏰ Manage Reminders', '📊 System Status')
-    markup.row('🔍 Find User')  # New search feature
+    markup.row('🔍 Find User')
     markup.row('🔙 Main Menu')
     bot.send_message(chat_id, "Admin Panel:", reply_markup=markup)
 
@@ -190,7 +219,6 @@ def start(message):
         bot.send_message(message.chat.id, "⚠️ Error in /start command")
 
 def save_timezone(message):
-    update_last_interaction(message.from_user.id)
     user_id = message.from_user.id
     chat_id = message.chat.id
     try:
@@ -198,14 +226,12 @@ def save_timezone(message):
             tz = 'Asia/Yangon'
         else:
             try:
-                # Validate timezone
                 pytz.timezone(message.text)
                 tz = message.text
             except pytz.UnknownTimeZoneError:
                 bot.send_message(chat_id, "❌ Invalid timezone. Please try again:")
                 return bot.register_next_step_handler(message, save_timezone)
 
-        # Save to database
         if set_timezone(user_id, chat_id, tz):
             bot.send_message(chat_id, f"✅ Timezone set to: {tz}")
             send_main_menu(chat_id, user_id)
@@ -230,7 +256,6 @@ def sky_clock(message):
     local = now.astimezone(user_tz)
     sky = now.astimezone(SKY_TZ)
     
-    # Calculate time difference
     time_diff = local - sky
     hours, remainder = divmod(abs(time_diff.seconds), 3600)
     minutes = remainder // 60
@@ -535,8 +560,8 @@ def handle_admin_panel(message):
 # User Statistics
 @bot.message_handler(func=lambda msg: msg.text == '👥 User Stats' and is_admin(msg.from_user.id))
 def user_stats(message):
-    update_last_interaction(message.from_user.id)
     try:
+        update_last_interaction(message.from_user.id)
         with get_db() as conn:
             with conn.cursor() as cur:
                 # Total users
@@ -563,7 +588,10 @@ def user_stats(message):
         bot.send_message(message.chat.id, text)
     except Exception as e:
         logger.error(f"Error in user_stats: {str(e)}")
-        bot.send_message(message.chat.id, f"❌ Error generating stats: {str(e)}")
+        error_msg = f"❌ Error generating stats: {str(e)}"
+        if "column \"last_interaction\" does not exist" in str(e):
+            error_msg += "\n\n⚠️ Database needs migration! Please restart the bot."
+        bot.send_message(message.chat.id, error_msg)
 
 # Broadcast Messaging
 @bot.message_handler(func=lambda msg: msg.text == '📢 Broadcast' and is_admin(msg.from_user.id))
@@ -851,7 +879,14 @@ def index():
 
 # ========================== MAIN ===============================
 if __name__ == '__main__':
+    logger.info("Initializing database...")
     init_db()
+    logger.info("Database initialized")
+    
+    logger.info("Setting up webhook...")
     bot.remove_webhook()
     bot.set_webhook(url=WEBHOOK_URL)
+    logger.info(f"Webhook set to: {WEBHOOK_URL}")
+    
+    logger.info("Starting Flask app...")
     app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 10000)))
