@@ -468,52 +468,24 @@ def ask_reminder_minutes(message, event_type, selected_time):
         bot.send_message(message.chat.id, "⚠️ Failed to set reminder. Please try again.")
         send_wax_menu(message.chat.id)
 
+import re
+
 def save_reminder(message, event_type, selected_time, is_daily):
     update_last_interaction(message.from_user.id)
-    # Handle back navigation
     if message.text.strip() == '🔙 Wax Events':
         send_wax_menu(message.chat.id)
         return
         
     try:
-        # Check if input is a number
+        # Extract numbers from input text (handles button clicks and typed numbers)
         input_text = message.text.strip()
-        try:
-            mins = int(input_text)
-        except ValueError:
-            # Check if it's one of the button values without extra text
-            if input_text in ['5', '10', '15', '20', '30', '45', '60']:
-                mins = int(input_text)
-            else:
-                bot.send_message(message.chat.id, "❌ Please enter a number between 1 and 60")
-                # Re-ask for minutes with keyboard
-                markup = telebot.types.ReplyKeyboardMarkup(resize_keyboard=True)
-                markup.row('5', '10', '15')
-                markup.row('20', '30', '45')
-                markup.row('60', '🔙 Wax Events')
-                bot.send_message(
-                    message.chat.id, 
-                    "Please choose a valid number (1-60):",
-                    reply_markup=markup
-                )
-                bot.register_next_step_handler(message, save_reminder, event_type, selected_time, is_daily)
-                return
+        match = re.search(r'\d+', input_text)
+        if not match:
+            raise ValueError("No numbers found in input")
             
-        # Validate range
+        mins = int(match.group())
         if mins < 1 or mins > 60:
-            bot.send_message(message.chat.id, "❌ Please enter a number between 1 and 60")
-            # Re-ask for minutes with keyboard
-            markup = telebot.types.ReplyKeyboardMarkup(resize_keyboard=True)
-            markup.row('5', '10', '15')
-            markup.row('20', '30', '45')
-            markup.row('60', '🔙 Wax Events')
-            bot.send_message(
-                message.chat.id, 
-                "Please choose a valid number (1-60):",
-                reply_markup=markup
-            )
-            bot.register_next_step_handler(message, save_reminder, event_type, selected_time, is_daily)
-            return
+            raise ValueError("Minutes must be between 1-60")
             
         user = get_user(message.from_user.id)
         if not user: 
@@ -524,35 +496,44 @@ def save_reminder(message, event_type, selected_time, is_daily):
         user_tz = pytz.timezone(tz)
         now = datetime.now(user_tz)
         
-        # Parse time string based on user's format
-        if fmt == '12hr':
-            # Handle 12-hour format with AM/PM
-            time_str = selected_time.strip()
-            if "AM" in time_str or "PM" in time_str:
-                time_obj = datetime.strptime(time_str, '%I:%M %p')
-            else:
-                # If AM/PM is missing but format is 12hr, assume current period
-                time_obj = datetime.strptime(time_str, '%I:%M')
-                # Adjust based on current time
-                if time_obj.hour == 12 and now.hour < 12:
-                    time_obj = time_obj.replace(hour=0)
-                elif time_obj.hour < 12 and now.hour >= 12:
-                    time_obj = time_obj.replace(hour=time_obj.hour + 12)
-        else:
-            # 24-hour format
-            time_obj = datetime.strptime(selected_time, '%H:%M')
+        # Clean time string from button text (remove emojis, parentheses, etc.)
+        clean_time = re.sub(r'[^0-9:apmAPM]', '', selected_time).strip()
         
-        hour = time_obj.hour
-        minute = time_obj.minute
-
-        # Create datetime object in user's timezone
-        today = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
-        if today < now:
-            today += timedelta(days=1)
+        # Parse time based on user's format
+        try:
+            if fmt == '12hr':
+                # Handle 12hr format variations
+                if 'am' in clean_time.lower() or 'pm' in clean_time.lower():
+                    time_obj = datetime.strptime(clean_time, '%I:%M %p')
+                else:
+                    # Handle times without AM/PM
+                    time_obj = datetime.strptime(clean_time, '%I:%M')
+            else:
+                # 24hr format
+                time_obj = datetime.strptime(clean_time, '%H:%M')
+        except ValueError:
+            # Try alternative parsing if first attempt fails
+            try:
+                time_obj = datetime.strptime(clean_time, '%H:%M')
+            except:
+                raise ValueError(f"Couldn't parse time: {clean_time}")
+        
+        # Create datetime in user's timezone
+        event_time_user = now.replace(
+            hour=time_obj.hour,
+            minute=time_obj.minute,
+            second=0,
+            microsecond=0
+        )
+        
+        # Adjust date if time has already passed
+        if event_time_user < now:
+            event_time_user += timedelta(days=1)
             
-        event_time_utc = today.astimezone(pytz.utc)
+        # Convert to UTC
+        event_time_utc = event_time_user.astimezone(pytz.utc)
 
-        # Save reminder to database
+        # Save to database
         with get_db() as conn:
             with conn.cursor() as cur:
                 cur.execute("""
@@ -563,15 +544,11 @@ def save_reminder(message, event_type, selected_time, is_daily):
                 reminder_id = cur.fetchone()[0]
                 conn.commit()
                 
-        # Log reminder details
-        logger.info(f"Reminder set: ID={reminder_id}, User={message.from_user.id}, "
-                    f"Event={event_type}, Time={event_time_utc}, NotifyBefore={mins} mins")
-        
-        # Schedule the reminder
+        # Schedule reminder
         schedule_reminder(message.from_user.id, reminder_id, event_type, 
                           event_time_utc, mins, is_daily)
                 
-        # Format confirmation message
+        # Confirmation message
         frequency = "daily" if is_daily else "one time"
         emoji = "🔄" if is_daily else "⏰"
         
@@ -584,10 +561,33 @@ def save_reminder(message, event_type, selected_time, is_daily):
             f"{emoji} Frequency: {frequency}"
         )
         send_main_menu(message.chat.id, message.from_user.id)
+        
+    except ValueError as ve:
+        logger.warning(f"User input error: {str(ve)}")
+        bot.send_message(
+            message.chat.id,
+            f"❌ Invalid input: {str(ve)}. Please choose minutes from buttons or type 1-60."
+        )
+        # Re-show minutes keyboard
+        markup = telebot.types.ReplyKeyboardMarkup(resize_keyboard=True)
+        markup.row('5', '10', '15')
+        markup.row('20', '30', '45')
+        markup.row('60', '🔙 Wax Events')
+        bot.send_message(
+            message.chat.id,
+            "Please choose how many minutes before the event to remind you:",
+            reply_markup=markup
+        )
+        bot.register_next_step_handler(message, save_reminder, event_type, selected_time, is_daily)
+        
     except Exception as e:
-        logger.error(f"Error saving reminder: {str(e)}")
+        logger.error(f"Reminder save failed: {str(e)}")
         logger.error(traceback.format_exc())
-        bot.send_message(message.chat.id, "⚠️ Failed to set reminder. Please try again.")
+        bot.send_message(
+            message.chat.id,
+            "⚠️ Failed to set reminder. Please try again later."
+        )
+        send_main_menu(message.chat.id, message.from_user.id)
 
 # ==================== REMINDER SCHEDULING =====================
 def schedule_reminder(user_id, reminder_id, event_type, event_time_utc, notify_before, is_daily):
