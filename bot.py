@@ -58,7 +58,8 @@ def init_db():
                 user_id BIGINT PRIMARY KEY,
                 chat_id BIGINT NOT NULL,
                 timezone TEXT NOT NULL,
-                time_format TEXT DEFAULT '12hr'
+                time_format TEXT DEFAULT '12hr',
+                last_interaction TIMESTAMP DEFAULT NOW()
             );
             """)
             
@@ -97,10 +98,10 @@ def set_timezone(user_id, chat_id, tz):
         with get_db() as conn:
             with conn.cursor() as cur:
                 cur.execute("""
-                    INSERT INTO users (user_id, chat_id, timezone) 
-                    VALUES (%s, %s, %s)
+                    INSERT INTO users (user_id, chat_id, timezone, last_interaction) 
+                    VALUES (%s, %s, %s, NOW())
                     ON CONFLICT (user_id) DO UPDATE 
-                    SET chat_id = EXCLUDED.chat_id, timezone = EXCLUDED.timezone;
+                    SET chat_id = EXCLUDED.chat_id, timezone = EXCLUDED.timezone, last_interaction = NOW();
                 """, (user_id, chat_id, tz))
                 conn.commit()
         logger.info(f"Timezone set for user {user_id}: {tz}")
@@ -113,7 +114,13 @@ def set_timezone(user_id, chat_id, tz):
 def set_time_format(user_id, fmt):
     with get_db() as conn:
         with conn.cursor() as cur:
-            cur.execute("UPDATE users SET time_format = %s WHERE user_id = %s", (fmt, user_id))
+            cur.execute("UPDATE users SET time_format = %s, last_interaction = NOW() WHERE user_id = %s", (fmt, user_id))
+            conn.commit()
+
+def update_last_interaction(user_id):
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            cur.execute("UPDATE users SET last_interaction = NOW() WHERE user_id = %s", (user_id,))
             conn.commit()
 
 # ===================== ADMIN UTILITIES =========================
@@ -155,10 +162,12 @@ def send_admin_menu(chat_id):
 # ======================= GLOBAL HANDLERS =======================
 @bot.message_handler(func=lambda msg: msg.text == '🔙 Main Menu')
 def handle_back_to_main(message):
+    update_last_interaction(message.from_user.id)
     send_main_menu(message.chat.id, message.from_user.id)
 
 @bot.message_handler(func=lambda msg: msg.text == '🔙 Admin Panel')
 def handle_back_to_admin(message):
+    update_last_interaction(message.from_user.id)
     if is_admin(message.from_user.id):
         send_admin_menu(message.chat.id)
 
@@ -166,6 +175,7 @@ def handle_back_to_admin(message):
 @bot.message_handler(commands=['start'])
 def start(message):
     try:
+        update_last_interaction(message.from_user.id)
         markup = telebot.types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
         markup.row('🇲🇲 Set to Myanmar Time')
         bot.send_message(
@@ -180,6 +190,7 @@ def start(message):
         bot.send_message(message.chat.id, "⚠️ Error in /start command")
 
 def save_timezone(message):
+    update_last_interaction(message.from_user.id)
     user_id = message.from_user.id
     chat_id = message.chat.id
     try:
@@ -207,6 +218,7 @@ def save_timezone(message):
 # ===================== MAIN MENU HANDLERS ======================
 @bot.message_handler(func=lambda msg: msg.text == '🕒 Sky Clock')
 def sky_clock(message):
+    update_last_interaction(message.from_user.id)
     user = get_user(message.from_user.id)
     if not user: 
         bot.send_message(message.chat.id, "Please set your timezone first with /start")
@@ -233,10 +245,12 @@ def sky_clock(message):
 
 @bot.message_handler(func=lambda msg: msg.text == '🕯 Wax Events')
 def wax_menu(message):
+    update_last_interaction(message.from_user.id)
     send_wax_menu(message.chat.id)
 
 @bot.message_handler(func=lambda msg: msg.text == '⚙️ Settings')
 def settings_menu(message):
+    update_last_interaction(message.from_user.id)
     user = get_user(message.from_user.id)
     if not user: 
         bot.send_message(message.chat.id, "Please set your timezone first with /start")
@@ -247,6 +261,7 @@ def settings_menu(message):
 
 @bot.message_handler(func=lambda msg: msg.text == '💎 Shards')
 def shards_menu(message):
+    update_last_interaction(message.from_user.id)
     user = get_user(message.from_user.id)
     if not user: 
         bot.send_message(message.chat.id, "Please set your timezone first with /start")
@@ -277,6 +292,7 @@ def shards_menu(message):
 # ====================== WAX EVENT HANDLERS =====================
 @bot.message_handler(func=lambda msg: msg.text in ['🧓 Grandma', '🐢 Turtle', '🌋 Geyser'])
 def handle_event(message):
+    update_last_interaction(message.from_user.id)
     mapping = {
         '🧓 Grandma': ('Grandma', 'every 2 hours at :05', 'even'),
         '🐢 Turtle': ('Turtle', 'every 2 hours at :20', 'even'),
@@ -364,6 +380,7 @@ def handle_event(message):
     bot.register_next_step_handler(message, ask_reminder_frequency, event_name)
 
 def ask_reminder_frequency(message, event_type):
+    update_last_interaction(message.from_user.id)
     # Handle back navigation
     if message.text.strip() == '🔙 Wax Events':
         send_wax_menu(message.chat.id)
@@ -393,6 +410,7 @@ def ask_reminder_frequency(message, event_type):
         bot.send_message(message.chat.id, "Invalid selection. Please try again.")
 
 def ask_reminder_minutes(message, event_type):
+    update_last_interaction(message.from_user.id)
     # Handle back navigation
     if message.text.strip() == '🔙 Wax Events':
         send_wax_menu(message.chat.id)
@@ -422,6 +440,7 @@ def ask_reminder_minutes(message, event_type):
         bot.send_message(message.chat.id, "Failed to set reminder. Please try again.")
 
 def save_reminder(message, event_type):
+    update_last_interaction(message.from_user.id)
     # Handle back navigation
     if message.text.strip() == '🔙 Wax Events':
         send_wax_menu(message.chat.id)
@@ -495,6 +514,7 @@ def save_reminder(message, event_type):
 # ====================== SETTINGS HANDLERS ======================
 @bot.message_handler(func=lambda msg: msg.text.startswith('🕰 Change Time Format'))
 def change_time_format(message):
+    update_last_interaction(message.from_user.id)
     user = get_user(message.from_user.id)
     if not user: 
         bot.send_message(message.chat.id, "Please set your timezone first with /start")
@@ -509,39 +529,46 @@ def change_time_format(message):
 # ======================= ADMIN PANEL ===========================
 @bot.message_handler(func=lambda msg: msg.text == '👤 Admin Panel' and is_admin(msg.from_user.id))
 def handle_admin_panel(message):
+    update_last_interaction(message.from_user.id)
     send_admin_menu(message.chat.id)
 
 # User Statistics
 @bot.message_handler(func=lambda msg: msg.text == '👥 User Stats' and is_admin(msg.from_user.id))
 def user_stats(message):
-    with get_db() as conn:
-        with conn.cursor() as cur:
-            # Total users
-            cur.execute("SELECT COUNT(*) FROM users")
-            total_users = cur.fetchone()[0]
-            
-            # Active users (last 7 days)
-            cur.execute("""
-                SELECT COUNT(DISTINCT user_id) 
-                FROM reminders 
-                WHERE created_at > NOW() - INTERVAL '7 days'
-            """)
-            active_users = cur.fetchone()[0]
-            
-            # Users with reminders
-            cur.execute("SELECT COUNT(DISTINCT user_id) FROM reminders")
-            users_with_reminders = cur.fetchone()[0]
+    update_last_interaction(message.from_user.id)
+    try:
+        with get_db() as conn:
+            with conn.cursor() as cur:
+                # Total users
+                cur.execute("SELECT COUNT(*) FROM users")
+                total_users = cur.fetchone()[0]
+                
+                # Active users (last 7 days)
+                cur.execute("""
+                    SELECT COUNT(*) 
+                    FROM users 
+                    WHERE last_interaction > NOW() - INTERVAL '7 days'
+                """)
+                active_users = cur.fetchone()[0]
+                
+                # Users with reminders
+                cur.execute("SELECT COUNT(DISTINCT user_id) FROM reminders")
+                users_with_reminders = cur.fetchone()[0]
     
-    text = (
-        f"👤 Total Users: {total_users}\n"
-        f"🚀 Active Users (7 days): {active_users}\n"
-        f"⏰ Users with Reminders: {users_with_reminders}"
-    )
-    bot.send_message(message.chat.id, text)
+        text = (
+            f"👤 Total Users: {total_users}\n"
+            f"🚀 Active Users (7 days): {active_users}\n"
+            f"⏰ Users with Reminders: {users_with_reminders}"
+        )
+        bot.send_message(message.chat.id, text)
+    except Exception as e:
+        logger.error(f"Error in user_stats: {str(e)}")
+        bot.send_message(message.chat.id, f"❌ Error generating stats: {str(e)}")
 
 # Broadcast Messaging
 @bot.message_handler(func=lambda msg: msg.text == '📢 Broadcast' and is_admin(msg.from_user.id))
 def start_broadcast(message):
+    update_last_interaction(message.from_user.id)
     markup = telebot.types.ReplyKeyboardMarkup(resize_keyboard=True)
     markup.row('🔊 Broadcast to All')
     markup.row('👤 Send to Specific User')
@@ -550,15 +577,18 @@ def start_broadcast(message):
 
 @bot.message_handler(func=lambda msg: msg.text == '🔊 Broadcast to All' and is_admin(msg.from_user.id))
 def broadcast_to_all(message):
+    update_last_interaction(message.from_user.id)
     msg = bot.send_message(message.chat.id, "Enter message to broadcast to ALL users (type /cancel to abort):")
     bot.register_next_step_handler(msg, process_broadcast_all)
 
 @bot.message_handler(func=lambda msg: msg.text == '👤 Send to Specific User' and is_admin(msg.from_user.id))
 def send_to_user(message):
+    update_last_interaction(message.from_user.id)
     msg = bot.send_message(message.chat.id, "Enter target USER ID (type /cancel to abort):")
     bot.register_next_step_handler(msg, get_target_user)
 
 def get_target_user(message):
+    update_last_interaction(message.from_user.id)
     if message.text.strip().lower() == '/cancel':
         send_admin_menu(message.chat.id)
         return
@@ -574,6 +604,7 @@ def get_target_user(message):
         bot.register_next_step_handler(message, get_target_user)
 
 def process_user_message(message):
+    update_last_interaction(message.from_user.id)
     if message.text.strip().lower() == '/cancel':
         send_admin_menu(message.chat.id)
         return
@@ -607,6 +638,7 @@ def process_user_message(message):
     send_admin_menu(message.chat.id)
 
 def process_broadcast_all(message):
+    update_last_interaction(message.from_user.id)
     if message.text.strip().lower() == '/cancel':
         send_admin_menu(message.chat.id)
         return
@@ -655,6 +687,7 @@ def process_broadcast_all(message):
 # Reminder Management
 @bot.message_handler(func=lambda msg: msg.text == '⏰ Manage Reminders' and is_admin(msg.from_user.id))
 def manage_reminders(message):
+    update_last_interaction(message.from_user.id)
     with get_db() as conn:
         with conn.cursor() as cur:
             cur.execute("""
@@ -680,6 +713,7 @@ def manage_reminders(message):
     bot.register_next_step_handler(msg, handle_reminder_action, reminders)
 
 def handle_reminder_action(message, reminders):
+    update_last_interaction(message.from_user.id)
     if message.text.strip().lower() == '/cancel':
         send_admin_menu(message.chat.id)
         return
@@ -703,6 +737,7 @@ def handle_reminder_action(message, reminders):
 # System Status
 @bot.message_handler(func=lambda msg: msg.text == '📊 System Status' and is_admin(msg.from_user.id))
 def system_status(message):
+    update_last_interaction(message.from_user.id)
     # Uptime calculation
     uptime = datetime.now() - start_time
     
@@ -747,10 +782,12 @@ def system_status(message):
 # User Search
 @bot.message_handler(func=lambda msg: msg.text == '🔍 Find User' and is_admin(msg.from_user.id))
 def find_user(message):
+    update_last_interaction(message.from_user.id)
     msg = bot.send_message(message.chat.id, "Enter username or user ID to search (type /cancel to abort):")
     bot.register_next_step_handler(msg, process_user_search)
 
 def process_user_search(message):
+    update_last_interaction(message.from_user.id)
     if message.text.strip().lower() == '/cancel':
         send_admin_menu(message.chat.id)
         return
