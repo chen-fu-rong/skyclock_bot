@@ -477,22 +477,27 @@ def save_reminder(message, event_type, selected_time, is_daily):
         
     try:
         # Check if input is a number
+        input_text = message.text.strip()
         try:
-            mins = int(message.text.strip())
+            mins = int(input_text)
         except ValueError:
-            bot.send_message(message.chat.id, "❌ Please enter a number between 1 and 60")
-            # Re-ask for minutes with keyboard
-            markup = telebot.types.ReplyKeyboardMarkup(resize_keyboard=True)
-            markup.row('5', '10', '15')
-            markup.row('20', '30', '45')
-            markup.row('60', '🔙 Wax Events')
-            bot.send_message(
-                message.chat.id, 
-                "Please choose a valid number (1-60):",
-                reply_markup=markup
-            )
-            bot.register_next_step_handler(message, save_reminder, event_type)
-            return
+            # Check if it's one of the button values without extra text
+            if input_text in ['5', '10', '15', '20', '30', '45', '60']:
+                mins = int(input_text)
+            else:
+                bot.send_message(message.chat.id, "❌ Please enter a number between 1 and 60")
+                # Re-ask for minutes with keyboard
+                markup = telebot.types.ReplyKeyboardMarkup(resize_keyboard=True)
+                markup.row('5', '10', '15')
+                markup.row('20', '30', '45')
+                markup.row('60', '🔙 Wax Events')
+                bot.send_message(
+                    message.chat.id, 
+                    "Please choose a valid number (1-60):",
+                    reply_markup=markup
+                )
+                bot.register_next_step_handler(message, save_reminder, event_type, selected_time, is_daily)
+                return
             
         # Validate range
         if mins < 1 or mins > 60:
@@ -507,7 +512,7 @@ def save_reminder(message, event_type, selected_time, is_daily):
                 "Please choose a valid number (1-60):",
                 reply_markup=markup
             )
-            bot.register_next_step_handler(message, save_reminder, event_type)
+            bot.register_next_step_handler(message, save_reminder, event_type, selected_time, is_daily)
             return
             
         user = get_user(message.from_user.id)
@@ -581,7 +586,8 @@ def save_reminder(message, event_type, selected_time, is_daily):
         send_main_menu(message.chat.id, message.from_user.id)
     except Exception as e:
         logger.error(f"Error saving reminder: {str(e)}")
-        bot.send_message(message.chat.id, "Failed to set reminder. Please try again.")
+        logger.error(traceback.format_exc())
+        bot.send_message(message.chat.id, "⚠️ Failed to set reminder. Please try again.")
 
 # ==================== REMINDER SCHEDULING =====================
 def schedule_reminder(user_id, reminder_id, event_type, event_time_utc, notify_before, is_daily):
