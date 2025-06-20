@@ -1,9 +1,10 @@
-# bot.py — Enhanced with Sorted Time Selection
+# bot.py — Enhanced with Admin Panel
 import os
 import pytz
 import logging
 import traceback
 import psycopg2
+import psutil
 from flask import Flask, request
 import telebot
 from apscheduler.schedulers.background import BackgroundScheduler
@@ -13,18 +14,27 @@ from psycopg2 import errors as psycopg2_errors
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler("bot.log"),
+        logging.StreamHandler()
+    ]
 )
 logger = logging.getLogger(__name__)
 
+# Environment variables
 API_TOKEN = os.getenv("BOT_TOKEN") or "YOUR_BOT_TOKEN"
 WEBHOOK_URL = os.getenv("WEBHOOK_URL") or "https://skyclock-bot.onrender.com/webhook"
 DB_URL = os.getenv("DATABASE_URL") or "postgresql://user:pass@host:port/db"
+ADMIN_USER_ID = os.getenv("ADMIN_USER_ID") or "YOUR_ADMIN_USER_ID"  # New admin ID
 
 bot = telebot.TeleBot(API_TOKEN)
 app = Flask(__name__)
 scheduler = BackgroundScheduler()
 scheduler.start()
+
+# Track bot start time for uptime
+start_time = datetime.now()
 
 # Sky timezone
 SKY_TZ = pytz.timezone('UTC')  # Sky clock uses UTC
@@ -61,7 +71,8 @@ def init_db():
                     event_type TEXT,
                     event_time_utc TIMESTAMP,
                     notify_before INT,
-                    is_daily BOOLEAN DEFAULT FALSE
+                    is_daily BOOLEAN DEFAULT FALSE,
+                    created_at TIMESTAMP DEFAULT NOW()
                 );
                 """)
             except psycopg2_errors.DuplicateColumn:
@@ -105,11 +116,20 @@ def set_time_format(user_id, fmt):
             cur.execute("UPDATE users SET time_format = %s WHERE user_id = %s", (fmt, user_id))
             conn.commit()
 
+# ===================== ADMIN UTILITIES =========================
+def is_admin(user_id):
+    return str(user_id) == ADMIN_USER_ID
+
 # ===================== NAVIGATION HELPERS ======================
-def send_main_menu(chat_id):
+def send_main_menu(chat_id, user_id=None):
     markup = telebot.types.ReplyKeyboardMarkup(resize_keyboard=True)
     markup.row('🕒 Sky Clock', '🕯 Wax Events')
     markup.row('💎 Shards', '⚙️ Settings')
+    
+    # Add Admin Panel button only for admin
+    if user_id and is_admin(user_id):
+        markup.row('👤 Admin Panel')
+    
     bot.send_message(chat_id, "Main Menu:", reply_markup=markup)
 
 def send_wax_menu(chat_id):
@@ -124,10 +144,23 @@ def send_settings_menu(chat_id, current_format):
     markup.row('🔙 Main Menu')
     bot.send_message(chat_id, "Settings:", reply_markup=markup)
 
+def send_admin_menu(chat_id):
+    markup = telebot.types.ReplyKeyboardMarkup(resize_keyboard=True)
+    markup.row('👥 User Stats', '📢 Broadcast')
+    markup.row('⏰ Manage Reminders', '📊 System Status')
+    markup.row('🔍 Find User')  # New search feature
+    markup.row('🔙 Main Menu')
+    bot.send_message(chat_id, "Admin Panel:", reply_markup=markup)
+
 # ======================= GLOBAL HANDLERS =======================
 @bot.message_handler(func=lambda msg: msg.text == '🔙 Main Menu')
 def handle_back_to_main(message):
-    send_main_menu(message.chat.id)
+    send_main_menu(message.chat.id, message.from_user.id)
+
+@bot.message_handler(func=lambda msg: msg.text == '🔙 Admin Panel')
+def handle_back_to_admin(message):
+    if is_admin(message.from_user.id):
+        send_admin_menu(message.chat.id)
 
 # ======================= START FLOW ============================
 @bot.message_handler(commands=['start'])
@@ -164,7 +197,7 @@ def save_timezone(message):
         # Save to database
         if set_timezone(user_id, chat_id, tz):
             bot.send_message(chat_id, f"✅ Timezone set to: {tz}")
-            send_main_menu(chat_id)
+            send_main_menu(chat_id, user_id)
         else:
             bot.send_message(chat_id, "⚠️ Failed to save timezone to database. Please try /start again.")
     except Exception as e:
@@ -451,7 +484,7 @@ def save_reminder(message, event_type):
             f"⏱ Remind: {mins} minutes before\n"
             f"{emoji} Frequency: {frequency}"
         )
-        send_main_menu(message.chat.id)
+        send_main_menu(message.chat.id, message.from_user.id)
     except ValueError:
         bot.send_message(message.chat.id, "Please enter a valid number (e.g., 5, 10)")
         bot.register_next_step_handler(message, save_reminder, event_type)
@@ -471,7 +504,293 @@ def change_time_format(message):
     new_fmt = '24hr' if fmt == '12hr' else '12hr'
     set_time_format(message.from_user.id, new_fmt)
     bot.send_message(message.chat.id, f"✅ Time format changed to {new_fmt}")
-    send_main_menu(message.chat.id)
+    send_main_menu(message.chat.id, message.from_user.id)
+
+# ======================= ADMIN PANEL ===========================
+@bot.message_handler(func=lambda msg: msg.text == '👤 Admin Panel' and is_admin(msg.from_user.id))
+def handle_admin_panel(message):
+    send_admin_menu(message.chat.id)
+
+# User Statistics
+@bot.message_handler(func=lambda msg: msg.text == '👥 User Stats' and is_admin(msg.from_user.id))
+def user_stats(message):
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            # Total users
+            cur.execute("SELECT COUNT(*) FROM users")
+            total_users = cur.fetchone()[0]
+            
+            # Active users (last 7 days)
+            cur.execute("""
+                SELECT COUNT(DISTINCT user_id) 
+                FROM reminders 
+                WHERE created_at > NOW() - INTERVAL '7 days'
+            """)
+            active_users = cur.fetchone()[0]
+            
+            # Users with reminders
+            cur.execute("SELECT COUNT(DISTINCT user_id) FROM reminders")
+            users_with_reminders = cur.fetchone()[0]
+    
+    text = (
+        f"👤 Total Users: {total_users}\n"
+        f"🚀 Active Users (7 days): {active_users}\n"
+        f"⏰ Users with Reminders: {users_with_reminders}"
+    )
+    bot.send_message(message.chat.id, text)
+
+# Broadcast Messaging
+@bot.message_handler(func=lambda msg: msg.text == '📢 Broadcast' and is_admin(msg.from_user.id))
+def start_broadcast(message):
+    markup = telebot.types.ReplyKeyboardMarkup(resize_keyboard=True)
+    markup.row('🔊 Broadcast to All')
+    markup.row('👤 Send to Specific User')
+    markup.row('🔙 Admin Panel')
+    bot.send_message(message.chat.id, "Choose broadcast type:", reply_markup=markup)
+
+@bot.message_handler(func=lambda msg: msg.text == '🔊 Broadcast to All' and is_admin(msg.from_user.id))
+def broadcast_to_all(message):
+    msg = bot.send_message(message.chat.id, "Enter message to broadcast to ALL users (type /cancel to abort):")
+    bot.register_next_step_handler(msg, process_broadcast_all)
+
+@bot.message_handler(func=lambda msg: msg.text == '👤 Send to Specific User' and is_admin(msg.from_user.id))
+def send_to_user(message):
+    msg = bot.send_message(message.chat.id, "Enter target USER ID (type /cancel to abort):")
+    bot.register_next_step_handler(msg, get_target_user)
+
+def get_target_user(message):
+    if message.text.strip().lower() == '/cancel':
+        send_admin_menu(message.chat.id)
+        return
+        
+    try:
+        user_id = int(message.text.strip())
+        # Store user ID in message object for next step
+        message.target_user_id = user_id
+        msg = bot.send_message(message.chat.id, f"Enter message for user {user_id}:")
+        bot.register_next_step_handler(msg, process_user_message)
+    except ValueError:
+        bot.send_message(message.chat.id, "❌ Invalid user ID. Must be a number. Try again:")
+        bot.register_next_step_handler(message, get_target_user)
+
+def process_user_message(message):
+    if message.text.strip().lower() == '/cancel':
+        send_admin_menu(message.chat.id)
+        return
+        
+    target_user_id = getattr(message, 'target_user_id', None)
+    if not target_user_id:
+        bot.send_message(message.chat.id, "❌ Error: User ID not found. Please start over.")
+        return send_admin_menu(message.chat.id)
+        
+    try:
+        # Get user's chat_id from database
+        with get_db() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT chat_id FROM users WHERE user_id = %s", (target_user_id,))
+                result = cur.fetchone()
+                
+                if result:
+                    chat_id = result[0]
+                    try:
+                        bot.send_message(chat_id, f"📢 Admin Message:\n\n{message.text}")
+                        bot.send_message(message.chat.id, f"✅ Message sent to user {target_user_id}")
+                    except Exception as e:
+                        logger.error(f"Failed to send to user {target_user_id}: {str(e)}")
+                        bot.send_message(message.chat.id, f"❌ Failed to send to user {target_user_id}. They may have blocked the bot.")
+                else:
+                    bot.send_message(message.chat.id, f"❌ User {target_user_id} not found in database")
+    except Exception as e:
+        logger.error(f"Error sending to specific user: {str(e)}")
+        bot.send_message(message.chat.id, "❌ Error sending message. Please try again.")
+    
+    send_admin_menu(message.chat.id)
+
+def process_broadcast_all(message):
+    if message.text.strip().lower() == '/cancel':
+        send_admin_menu(message.chat.id)
+        return
+        
+    broadcast_text = message.text
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT chat_id FROM users")
+            chat_ids = [row[0] for row in cur.fetchall()]
+    
+    success = 0
+    failed = 0
+    total = len(chat_ids)
+    
+    # Send with progress updates
+    progress_msg = bot.send_message(message.chat.id, f"📤 Sending broadcast... 0/{total}")
+    
+    for i, chat_id in enumerate(chat_ids):
+        try:
+            bot.send_message(chat_id, f"📢 Admin Broadcast:\n\n{broadcast_text}")
+            success += 1
+        except Exception as e:
+            logger.error(f"Broadcast failed for {chat_id}: {str(e)}")
+            failed += 1
+            
+        # Update progress every 10 messages or last message
+        if (i + 1) % 10 == 0 or (i + 1) == total:
+            try:
+                bot.edit_message_text(
+                    f"📤 Sending broadcast... {i+1}/{total}",
+                    message.chat.id,
+                    progress_msg.message_id
+                )
+            except:
+                pass  # Fail silently on edit errors
+    
+    bot.send_message(
+        message.chat.id,
+        f"📊 Broadcast complete!\n"
+        f"✅ Success: {success}\n"
+        f"❌ Failed: {failed}\n"
+        f"📩 Total: {total}"
+    )
+    send_admin_menu(message.chat.id)
+
+# Reminder Management
+@bot.message_handler(func=lambda msg: msg.text == '⏰ Manage Reminders' and is_admin(msg.from_user.id))
+def manage_reminders(message):
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT r.id, u.user_id, r.event_type, r.event_time_utc, r.notify_before
+                FROM reminders r
+                JOIN users u ON r.user_id = u.user_id
+                WHERE r.event_time_utc > NOW()
+                ORDER BY r.event_time_utc
+                LIMIT 50
+            """)
+            reminders = cur.fetchall()
+    
+    if not reminders:
+        bot.send_message(message.chat.id, "No active reminders found")
+        return
+    
+    text = "⏰ Active Reminders:\n\n"
+    for i, rem in enumerate(reminders, 1):
+        text += f"{i}. {rem[2]} @ {rem[3].strftime('%Y-%m-%d %H:%M')} UTC (User: {rem[1]})\n"
+    
+    text += "\nReply with reminder number to delete or /cancel"
+    msg = bot.send_message(message.chat.id, text)
+    bot.register_next_step_handler(msg, handle_reminder_action, reminders)
+
+def handle_reminder_action(message, reminders):
+    if message.text.strip().lower() == '/cancel':
+        send_admin_menu(message.chat.id)
+        return
+    
+    try:
+        index = int(message.text) - 1
+        if 0 <= index < len(reminders):
+            rem_id = reminders[index][0]
+            with get_db() as conn:
+                with conn.cursor() as cur:
+                    cur.execute("DELETE FROM reminders WHERE id = %s", (rem_id,))
+                    conn.commit()
+            bot.send_message(message.chat.id, "✅ Reminder deleted")
+        else:
+            bot.send_message(message.chat.id, "Invalid selection")
+    except ValueError:
+        bot.send_message(message.chat.id, "Please enter a valid number")
+    
+    send_admin_menu(message.chat.id)
+
+# System Status
+@bot.message_handler(func=lambda msg: msg.text == '📊 System Status' and is_admin(msg.from_user.id))
+def system_status(message):
+    # Uptime calculation
+    uptime = datetime.now() - start_time
+    
+    # Database status
+    db_status = "✅ Connected"
+    try:
+        with get_db() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT 1")
+    except Exception as e:
+        db_status = f"❌ Error: {str(e)}"
+    
+    # Recent errors
+    error_count = 0
+    try:
+        with open('bot.log', 'r') as f:
+            for line in f:
+                if 'ERROR' in line:
+                    error_count += 1
+    except Exception as e:
+        error_count = f"Error reading log: {str(e)}"
+    
+    # Memory usage
+    memory = psutil.virtual_memory()
+    memory_usage = f"{memory.used / (1024**3):.1f}GB / {memory.total / (1024**3):.1f}GB ({memory.percent}%)"
+    
+    # Active jobs
+    try:
+        job_count = len(scheduler.get_jobs())
+    except:
+        job_count = "N/A"
+    
+    text = (
+        f"⏱ Uptime: {str(uptime).split('.')[0]}\n"
+        f"🗄 Database: {db_status}\n"
+        f"💾 Memory: {memory_usage}\n"
+        f"❗️ Recent Errors: {error_count}\n"
+        f"🤖 Active Jobs: {job_count}"
+    )
+    bot.send_message(message.chat.id, text)
+
+# User Search
+@bot.message_handler(func=lambda msg: msg.text == '🔍 Find User' and is_admin(msg.from_user.id))
+def find_user(message):
+    msg = bot.send_message(message.chat.id, "Enter username or user ID to search (type /cancel to abort):")
+    bot.register_next_step_handler(msg, process_user_search)
+
+def process_user_search(message):
+    if message.text.strip().lower() == '/cancel':
+        send_admin_menu(message.chat.id)
+        return
+        
+    search_term = message.text.strip()
+    
+    try:
+        with get_db() as conn:
+            with conn.cursor() as cur:
+                # Try searching by user ID
+                if search_term.isdigit():
+                    cur.execute(
+                        "SELECT user_id, chat_id, timezone FROM users WHERE user_id = %s",
+                        (int(search_term),)
+                    )
+                    results = cur.fetchall()
+                # Search by timezone
+                else:
+                    cur.execute(
+                        "SELECT user_id, chat_id, timezone FROM users WHERE timezone ILIKE %s",
+                        (f'%{search_term}%',)
+                    )
+                    results = cur.fetchall()
+                
+                if not results:
+                    bot.send_message(message.chat.id, "❌ No users found")
+                    return send_admin_menu(message.chat.id)
+                    
+                response = "🔍 Search Results:\n\n"
+                for i, user in enumerate(results, 1):
+                    user_id, chat_id, tz = user
+                    response += f"{i}. User ID: {user_id}\nChat ID: {chat_id}\nTimezone: {tz}\n\n"
+                
+                bot.send_message(message.chat.id, response)
+                
+    except Exception as e:
+        logger.error(f"User search error: {str(e)}")
+        bot.send_message(message.chat.id, "❌ Error during search")
+    
+    send_admin_menu(message.chat.id)
 
 # ========================== WEBHOOK ============================
 @app.route('/webhook', methods=['POST'])
