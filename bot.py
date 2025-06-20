@@ -536,11 +536,18 @@ def save_reminder(message, event_type, selected_time, is_daily):
         # Save to database
         with get_db() as conn:
             with conn.cursor() as cur:
+                trigger_time = event_time_utc - timedelta(minutes=mins)
                 cur.execute("""
-                INSERT INTO reminders (user_id, event_type, event_time_utc, notify_before, is_daily, created_at)
-                VALUES (%s, %s, %s, %s, %s, NOW())
+                INSERT INTO reminders (
+                user_id, event_type, event_time_utc, trigger_time,
+                notify_before, is_daily, created_at
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, NOW())
                 RETURNING id
-                """, (message.from_user.id, event_type, event_time_utc, mins, is_daily))
+                """, (
+                    message.from_user.id, event_type, event_time_utc,
+                    trigger_time, mins, is_daily
+                ))
                 reminder_id = cur.fetchone()[0]
                 conn.commit()
                 
