@@ -1,14 +1,15 @@
-# bot.py - Fixed Version with Reminder Flow Fixes
+# bot.py - Enhanced with Shard API Integration
 import os
 import pytz
 import logging
 import traceback
 import psycopg2
 import psutil
+import requests
 from flask import Flask, request
 import telebot
 from apscheduler.schedulers.background import BackgroundScheduler
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, date
 from psycopg2 import errors as psycopg2_errors
 
 # Configure logging
@@ -27,6 +28,7 @@ API_TOKEN = os.getenv("BOT_TOKEN") or "YOUR_BOT_TOKEN"
 WEBHOOK_URL = os.getenv("WEBHOOK_URL") or "https://skyclock-bot.onrender.com/webhook"
 DB_URL = os.getenv("DATABASE_URL") or "postgresql://user:pass@host:port/db"
 ADMIN_USER_ID = os.getenv("ADMIN_USER_ID") or "YOUR_ADMIN_USER_ID"
+SHARD_API_URL = "https://sky-shards.pages.dev/data/shard_locations.json"
 
 bot = telebot.TeleBot(API_TOKEN)
 app = Flask(__name__)
@@ -38,6 +40,10 @@ start_time = datetime.now()
 
 # Sky timezone
 SKY_TZ = pytz.timezone('UTC')
+
+# Shard data cache
+shard_data_cache = None
+last_shard_fetch = None
 
 # ========================== DATABASE ===========================
 def get_db():
@@ -279,35 +285,132 @@ def settings_menu(message):
     _, fmt = user
     send_settings_menu(message.chat.id, fmt)
 
-@bot.message_handler(func=lambda msg: msg.text == '💎 Shards')
-def shards_menu(message):
-    update_last_interaction(message.from_user.id)
-    user = get_user(message.from_user.id)
+# ===================== SHARD FUNCTIONS =========================
+def get_shard_data():
+    global shard_data_cache, last_shard_fetch
+    
+    # Refresh cache every 6 hours
+    if (not shard_data_cache or 
+        not last_shard_fetch or 
+        (datetime.now() - last_shard_fetch).seconds > 21600):
+        
+        try:
+            response = requests.get(SHARD_API_URL, timeout=10)
+            response.raise_for_status()
+            shard_data_cache = response.json()
+            last_shard_fetch = datetime.now()
+            logger.info("Fetched fresh shard data from API")
+        except Exception as e:
+            logger.error(f"Failed to fetch shard data: {str(e)}")
+            if not shard_data_cache:
+                return None
+    
+    return shard_data_cache
+
+def send_shard_info(chat_id, user_id, target_date=None):
+    user = get_user(user_id)
     if not user: 
-        bot.send_message(message.chat.id, "Please set your timezone first with /start")
+        bot.send_message(chat_id, "Please set your timezone first with /start")
         return
         
     tz, fmt = user
     user_tz = pytz.timezone(tz)
-    now = datetime.now(user_tz)
     
-    # Shard event times (every 2 hours at :05)
-    event_times = []
-    for hour in range(0, 24, 2):
-        event_times.append(now.replace(hour=hour, minute=5, second=0, microsecond=0))
+    # Default to today if no date specified
+    if not target_date:
+        target_date = datetime.now(user_tz).date()
     
-    # Find next shard event
-    next_event = next((et for et in event_times if et > now), event_times[0] + timedelta(days=1))
-    diff = next_event - now
-    hrs, mins = divmod(diff.seconds // 60, 60)
+    shard_data = get_shard_data()
+    if not shard_data:
+        bot.send_message(chat_id, "⚠️ Shard data is currently unavailable. Please try again later.")
+        return
     
-    text = (
-        "💎 Shard Events occur every 2 hours at :05\n\n"
-        f"Next Shard Event: {format_time(next_event, fmt)}\n"
-        f"⏳ Time Remaining: {hrs}h {mins}m"
+    # Find shard for target date
+    target_str = target_date.strftime('%Y-%m-%d')
+    shard = next((s for s in shard_data if s['date'] == target_str), None)
+    
+    if not shard:
+        bot.send_message(chat_id, f"❌ No shard data found for {target_date.strftime('%b %d, %Y')}")
+        return
+    
+    # Format message
+    message = (
+        f"💎 <b>Shard - {target_date.strftime('%b %d, %Y')}</b>\n\n"
+        f"<b>Realm:</b> {shard['realm']}\n"
+        f"<b>Area:</b> {shard['area']}\n"
+        f"<b>Location:</b> {shard['location']}\n"
+        f"<b>Notes:</b> {shard['notes']}\n\n"
+        f"<a href='{shard['image']}'>View Location Image</a>"
     )
     
-    bot.send_message(message.chat.id, text)
+    # Create navigation buttons
+    keyboard = telebot.types.InlineKeyboardMarkup()
+    
+    # Previous button
+    prev_date = target_date - timedelta(days=1)
+    keyboard.add(
+        telebot.types.InlineKeyboardButton(
+            "⬅️ Previous", 
+            callback_data=f"shard:{prev_date}"
+        ),
+        telebot.types.InlineKeyboardButton(
+            "Next ➡️", 
+            callback_data=f"shard:{target_date + timedelta(days=1)}"
+        )
+    )
+    
+    # Add today button if not viewing today
+    today = datetime.now(user_tz).date()
+    if target_date != today:
+        keyboard.add(
+            telebot.types.InlineKeyboardButton(
+                "⏩ Today", 
+                callback_data=f"shard:{today}"
+            )
+        )
+    
+    # Add next event time
+    now = datetime.now(user_tz)
+    event_times = [now.replace(hour=h, minute=5, second=0, microsecond=0) 
+                  for h in range(0, 24, 2)]
+    next_event = next((et for et in event_times if et > now), event_times[0] + timedelta(days=1))
+    hrs, mins = divmod((next_event - now).seconds // 60, 60)
+    
+    message += f"\n\n⏱ <b>Next Shard Event:</b> {format_time(next_event, fmt)} ({hrs}h {mins}m)"
+    
+    bot.send_message(
+        chat_id, 
+        message, 
+        parse_mode='HTML', 
+        disable_web_page_preview=True,
+        reply_markup=keyboard
+    )
+
+# ===================== SHARD HANDLERS =========================
+@bot.callback_query_handler(func=lambda call: call.data.startswith('shard:'))
+def handle_shard_callback(call):
+    try:
+        date_str = call.data.split(':')[1]
+        target_date = date.fromisoformat(date_str)
+        send_shard_info(call.message.chat.id, call.from_user.id, target_date)
+        
+        # Edit original message instead of sending new one
+        try:
+            bot.edit_message_reply_markup(
+                call.message.chat.id,
+                call.message.message_id,
+                reply_markup=None
+            )
+        except:
+            pass  # Fail silently if message can't be edited
+    except Exception as e:
+        logger.error(f"Error handling shard callback: {str(e)}")
+        bot.answer_callback_query(call.id, "❌ Failed to load shard data")
+
+@bot.message_handler(func=lambda msg: msg.text == '💎 Shards')
+def shards_menu(message):
+    update_last_interaction(message.from_user.id)
+    send_shard_info(message.chat.id, message.from_user.id)
 
 # ====================== WAX EVENT HANDLERS =====================
 @bot.message_handler(func=lambda msg: msg.text in ['🧓 Grandma', '🐢 Turtle', '🌋 Geyser'])
@@ -470,12 +573,6 @@ def ask_reminder_minutes(message, event_type, selected_time):
 
 import re
 
-# bot.py - Fixed Version with Reminder Flow Fixes
-# ... [code unchanged until inside save_reminder() function] ...
-
-# bot.py - Enhanced with Debug Logs in save_reminder()
-# ... [unchanged code above] ...
-
 def save_reminder(message, event_type, selected_time, is_daily):
     update_last_interaction(message.from_user.id)
     if message.text.strip() == '🔙 Wax Events':
@@ -604,10 +701,6 @@ def save_reminder(message, event_type, selected_time, is_daily):
             "⚠️ Failed to set reminder. Please try again later."
         )
         send_main_menu(message.chat.id, message.from_user.id)
-
-# ... rest of code unchanged ...
-
-
 
 # ==================== REMINDER SCHEDULING =====================
 def schedule_reminder(user_id, reminder_id, event_type, event_time_utc, notify_before, is_daily):
@@ -953,12 +1046,18 @@ def system_status(message):
     except:
         job_count = "N/A"
     
+    # Shard cache status
+    shard_status = "✅ Loaded" if shard_data_cache else "❌ Not loaded"
+    if last_shard_fetch:
+        shard_status += f" (Last fetch: {last_shard_fetch.strftime('%Y-%m-%d %H:%M')})"
+    
     text = (
         f"⏱ Uptime: {str(uptime).split('.')[0]}\n"
         f"🗄 Database: {db_status}\n"
         f"💾 Memory: {memory_usage}\n"
         f"❗️ Recent Errors: {error_count}\n"
-        f"🤖 Active Jobs: {job_count}"
+        f"🤖 Active Jobs: {job_count}\n"
+        f"💎 Shard Data: {shard_status}"
     )
     bot.send_message(message.chat.id, text)
 
@@ -1054,6 +1153,10 @@ if __name__ == '__main__':
                 logger.info(f"Scheduled {len(reminders)} existing reminders")
     except Exception as e:
         logger.error(f"Error scheduling existing reminders: {str(e)}")
+    
+    # Pre-fetch shard data
+    logger.info("Fetching initial shard data...")
+    get_shard_data()
     
     logger.info("Setting up webhook...")
     bot.remove_webhook()

@@ -6,3 +6,4 @@ python-dotenv==1.0.0
 flask
 telebot
 psutil
+requests==2.31.0
