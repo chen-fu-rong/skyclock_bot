@@ -26,7 +26,115 @@ SHARD_TIMES_UTC = [2.25, 6.25, 10.25, 14.25, 18.25, 22.25]  # Hours
 DEFAULT_PHASE_MAP = {
     0: {"realm": "Prairie", "area": "Village", "type": "Black"},
     1: {"realm": "Prairie", "area": "Caves", "type": "Black"},
-    # ... [ALL PHASES FROM ORIGINAL CODE] ...
+    2: {"realm": "Forest", "area": "BrokenBridge", "type": "Red"},
+    3: {"realm": "Forest", "area": "ElevatedClearing", "type": "Black"},
+    4: {"realm": "Valley", "area": "Village", "type": "Black"},
+    5: {"realm": "Valley", "area": "IceRink", "type": "Red"},
+    6: {"realm": "Wasteland", "area": "Battlefield", "type": "Red"},
+    7: {"realm": "Wasteland", "area": "Graveyard", "type": "Red"},
+    8: {"realm": "Vault", "area": "FirstFloor", "type": "Black"},
+    9: {"realm": "Prairie", "area": "BirdNest", "type": "Black"},
+    10: {"realm": "Prairie", "area": "ButterflyFields", "type": "Red"},
+    11: {"realm": "Forest", "area": "Boneyard", "type": "Red"},
+    12: {"realm": "Forest", "area": "ForestBrook", "type": "Black"},
+    13: {"realm": "Valley", "area": "HermitValley", "type": "Red"},
+    14: {"realm": "Valley", "area": "VillageOfDreams", "type": "Red"},
+    15: {"realm": "Wasteland", "area": "ForgottenArk", "type": "Black"},
+    16: {"realm": "Wasteland", "area": "CrabField", "type": "Black"},
+    17: {"realm": "Vault", "area": "SecondFloor", "type": "Red"},
+    18: {"realm": "Prairie", "area": "Sanctuary", "type": "Black"},
+    19: {"realm": "Forest", "area": "Gloom", "type": "Black"},
+    20: {"realm": "Forest", "area": "Treehouse", "type": "Red"},
+    21: {"realm": "Valley", "area": "DreamVillage", "type": "Red"},
+    22: {"realm": "Valley", "area": "ValleyArena", "type": "Black"},
+    23: {"realm": "Wasteland", "area": "Battlefield", "type": "Black"},
+    24: {"realm": "Wasteland", "area": "Graveyard", "type": "Red"},
+    25: {"realm": "Vault", "area": "ThirdFloor", "type": "Red"},
+    26: {"realm": "Vault", "area": "StarlightDesert", "type": "Black"},
+    27: {"realm": "Prairie", "area": "Caves", "type": "Black"},
+    28: {"realm": "Forest", "area": "ElevatedClearing", "type": "Red"},
+    29: {"realm": "Valley", "area": "Village", "type": "Red"},
+    30: {"realm": "Valley", "area": "IceRink", "type": "Black"},
+    31: {"realm": "Wasteland", "area": "Battlefield", "type": "Black"},
+    32: {"realm": "Wasteland", "area": "Graveyard", "type": "Red"},
+    33: {"realm": "Vault", "area": "FirstFloor", "type": "Red"},
+    34: {"realm": "Prairie", "area": "BirdNest", "type": "Black"},
+    35: {"realm": "Prairie", "area": "ButterflyFields", "type": "Black"},
+    36: {"realm": "Forest", "area": "Boneyard", "type": "Red"},
+    37: {"realm": "Forest", "area": "ForestBrook", "type": "Red"},
+    38: {"realm": "Valley", "area": "HermitValley", "type": "Black"},
+    39: {"realm": "Valley", "area": "VillageOfDreams", "type": "Black"},
+    40: {"realm": "Wasteland", "area": "ForgottenArk", "type": "Red"},
+    41: {"realm": "Wasteland", "area": "CrabField", "type": "Red"},
+    42: {"realm": "Vault", "area": "SecondFloor", "type": "Black"},
+    43: {"realm": "Prairie", "area": "Sanctuary", "type": "Black"},
+    44: {"realm": "Forest", "area": "Gloom", "type": "Red"},
+    45: {"realm": "Forest", "area": "Treehouse", "type": "Red"},
+    46: {"realm": "Valley", "area": "DreamVillage", "type": "Black"},
+    47: {"realm": "Valley", "area": "ValleyArena", "type": "Black"},
+    48: {"realm": "Wasteland", "area": "Battlefield", "type": "Red"},
+    49: {"realm": "Wasteland", "area": "Graveyard", "type": "Red"},
+    50: {"realm": "Vault", "area": "ThirdFloor", "type": "Black"},
+    51: {"realm": "Vault", "area": "StarlightDescent", "type": "Black"},
+    52: {"realm": "Prairie", "area": "Caves", "type": "Red"},
+    53: {"realm": "Forest", "area": "ElevatedClearing", "type": "Red"},
+    54: {"realm": "Vault", "area": "StarlightDescent", "type": "Red"},
+    55: {"realm": "Wasteland", "area": "Graveyard", "type": "Red"},
+    56: {"realm": "Prairie", "area": "ButterflyFields", "type": "Black"},
+    57: {"realm": "Forest", "area": "ForestBrook", "type": "Black"},
+    58: {"realm": "Valley", "area": "VillageOfDreams", "type": "Red"},
+    59: {"realm": "Wasteland", "area": "ForgottenArk", "type": "Red"},
+    60: {"realm": "Vault", "area": "Archives", "type": "Black"},
+    61: {"realm": "Prairie", "area": "Sanctuary", "type": "Black"},
+    62: {"realm": "Forest", "area": "HiddenForestBrokenBridge", "type": "Red"},
+    63: {"realm": "Valley", "area": "ValleyIceRink", "type": "Red"},
+    64: {"realm": "Wasteland", "area": "CrabField", "type": "Black"},
+    65: {"realm": "Vault", "area": "FirstFloor", "type": "Black"},
+    66: {"realm": "Prairie", "area": "BirdNest", "type": "Red"},
+    67: {"realm": "Forest", "area": "Boneyard", "type": "Red"},
+    68: {"realm": "Valley", "area": "HermitValley", "type": "Black"},
+    69: {"realm": "Wasteland", "area": "Battlefield", "type": "Black"},
+    70: {"realm": "Vault", "area": "SecondFloor", "type": "Red"},
+    71: {"realm": "Prairie", "area": "Caves", "type": "Red"},
+    72: {"realm": "Forest", "area": "ElevatedClearing", "type": "Black"},
+    73: {"realm": "Valley", "area": "Village", "type": "Black"},
+    74: {"realm": "Wasteland", "area": "Graveyard", "type": "Red"},
+    75: {"realm": "Vault", "area": "ThirdFloor", "type": "Red"},
+    76: {"realm": "Prairie", "area": "ButterflyFields", "type": "Black"},
+    77: {"realm": "Forest", "area": "ForestBrook", "type": "Black"},
+    78: {"realm": "Valley", "area": "IceRink", "type": "Red"},
+    79: {"realm": "Wasteland", "area": "ForgottenArk", "type": "Red"},
+    80: {"realm": "Vault", "area": "StarlightDescent", "type": "Black"},
+    81: {"realm": "Prairie", "area": "Sanctuary", "type": "Black"},
+    82: {"realm": "Forest", "area": "Treehouse", "type": "Red"},
+    83: {"realm": "Valley", "area": "DreamVillage", "type": "Red"},
+    84: {"realm": "Wasteland", "area": "CrabField", "type": "Black"},
+    85: {"realm": "Vault", "area": "FirstFloor", "type": "Black"},
+    86: {"realm": "Prairie", "area": "BirdNest", "type": "Red"},
+    87: {"realm": "Forest", "area": "Boneyard", "type": "Red"},
+    88: {"realm": "Valley", "area": "HermitValley", "type": "Black"},
+    89: {"realm": "Wasteland", "area": "Battlefield", "type": "Black"},
+    90: {"realm": "Vault", "area": "SecondFloor", "type": "Red"},
+    91: {"realm": "Prairie", "area": "Caves", "type": "Red"},
+    92: {"realm": "Forest", "area": "ElevatedClearing", "type": "Black"},
+    93: {"realm": "Valley", "area": "Village", "type": "Black"},
+    94: {"realm": "Wasteland", "area": "Graveyard", "type": "Red"},
+    95: {"realm": "Vault", "area": "ThirdFloor", "type": "Red"},
+    96: {"realm": "Prairie", "area": "ButterflyFields", "type": "Black"},
+    97: {"realm": "Forest", "area": "ForestBrook", "type": "Black"},
+    98: {"realm": "Valley", "area": "IceRink", "type": "Red"},
+    99: {"realm": "Wasteland", "area": "ForgottenArk", "type": "Red"},
+    100: {"realm": "Vault", "area": "Archives", "type": "Black"},
+    101: {"realm": "Prairie", "area": "Sanctuary", "type": "Black"},
+    102: {"realm": "Forest", "area": "HiddenForestBrokenBridge", "type": "Red"},
+    103: {"realm": "Valley", "area": "ValleyIceRink", "type": "Red"},
+    104: {"realm": "Wasteland", "area": "CrabField", "type": "Black"},
+    105: {"realm": "Vault", "area": "FirstFloor", "type": "Black"},
+    106: {"realm": "Prairie", "area": "BirdNest", "type": "Red"},
+    107: {"realm": "Forest", "area": "Boneyard", "type": "Red"},
+    108: {"realm": "Valley", "area": "HermitValley", "type": "Black"},
+    109: {"realm": "None", "area": "RestDay", "type": "None"},
+    110: {"realm": "None", "area": "RestDay", "type": "None"},
     111: {"realm": "None", "area": "RestDay", "type": "None"}
 }
 
@@ -42,17 +150,29 @@ def initialize_shard_cache():
     
     if not is_cache_loaded:
         logger.info("Initializing shard cache...")
-        # First try loading from database
+        
+        # 1. First load from database
         if not load_shard_data_from_db():
             logger.warning("Failed to load from DB, saving default data...")
-            # If DB fails, save and load default data
+            # Save default data to DB
             save_shard_data_to_db(DEFAULT_PHASE_MAP)
-            load_shard_data_from_db()
+            # Try loading from DB again
+            if not load_shard_data_from_db():
+                logger.error("Failed to load from DB after saving defaults. Using in-memory default.")
+                # Fallback to in-memory default
+                phase_map_cache = DEFAULT_PHASE_MAP.copy()
         
-        # Then refresh from GitHub
-        refresh_phase_map()
+        # 2. Then refresh from GitHub to get latest data
+        if not refresh_phase_map():
+            logger.warning("Failed to refresh from GitHub. Using existing cache.")
+        
+        # 3. Ensure we have at least the default data
+        if not phase_map_cache:
+            logger.error("Cache is still empty! Loading default directly.")
+            phase_map_cache = DEFAULT_PHASE_MAP.copy()
+        
+        logger.info(f"Shard cache initialized with {len(phase_map_cache)} entries")
         is_cache_loaded = True
-        logger.info("Shard cache initialized successfully")
 
 def calculate_phase(target_date):
     """Calculate shard phase for a given date"""
@@ -130,12 +250,14 @@ def refresh_phase_map():
             # Try alternative pattern
             start_idx = content.find("PHASE_TO_SHARD = {")
             if start_idx == -1:
-                raise ValueError("PHASE_TO_SHARD not found in file")
+                logger.error("PHASE_TO_SHARD not found in file")
+                return False
         
         # Find the opening brace of the object
         start_idx = content.find('{', start_idx)
         if start_idx == -1:
-            raise ValueError("Object start not found")
+            logger.error("Object start not found")
+            return False
         
         # Parse until matching closing brace
         brace_count = 1
@@ -148,7 +270,8 @@ def refresh_phase_map():
             current_idx += 1
         
         if brace_count != 0:
-            raise ValueError("Unbalanced braces in object")
+            logger.error("Unbalanced braces in object")
+            return False
         
         ts_map = content[start_idx:current_idx]
         
@@ -157,6 +280,10 @@ def refresh_phase_map():
         pattern = re.compile(r'(\d+):\s*{\s*realm:\s*Realm\.(\w+),\s*area:\s*Area\.(\w+)(?:,\s*type:\s*ShardType\.(\w+))?', re.DOTALL)
         
         matches = pattern.findall(ts_map)
+        if not matches:
+            logger.error("No matches found in phase map")
+            return False
+            
         for match in matches:
             phase = int(match[0])
             realm = match[1]
@@ -240,6 +367,8 @@ def save_shard_data_to_db(data):
     except Exception as e:
         logger.error(f"Error saving shard data to DB: {str(e)}")
         return False
+
+# ... [Other functions unchanged] ...
 
 # ... [Other functions remain unchanged] ...
 

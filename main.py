@@ -23,7 +23,7 @@ if __name__ == '__main__':
     init_db()
     logger.info("Database initialized")
 
-    # Initialize shard cache
+    # Initialize shard cache FIRST
     logger.info("Initializing shard cache...")
     initialize_shard_cache()
     
@@ -39,10 +39,13 @@ if __name__ == '__main__':
     register_handlers(bot)
 
     logger.info("Setting up webhook...")
-    bot.remove_webhook()
     WEBHOOK_URL = os.getenv("WEBHOOK_URL") or "https://skyclock-bot.onrender.com/webhook"
-    bot.set_webhook(url=WEBHOOK_URL)
-    logger.info(f"Webhook set to: {WEBHOOK_URL}")
+    try:
+        bot.remove_webhook()
+        bot.set_webhook(url=WEBHOOK_URL)
+        logger.info(f"Webhook set to: {WEBHOOK_URL}")
+    except Exception as e:
+        logger.error(f"Error setting webhook: {str(e)}")
 
     logger.info("Starting Flask app...")
     port = int(os.environ.get('PORT', 10000))

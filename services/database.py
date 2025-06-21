@@ -120,3 +120,14 @@ def update_last_interaction(user_id):
     except Exception as e:
         logger.error(f"Error updating last interaction for {user_id}: {str(e)}")
         return False
+    
+# services/database.py (add this function)
+def get_db_connection():
+    """Get a database connection with autocommit off"""
+    try:
+        conn = psycopg2.connect(DB_URL, sslmode='require')
+        conn.autocommit = False
+        return conn
+    except Exception as e:
+        logger.error(f"Database connection failed: {str(e)}")
+        raise
