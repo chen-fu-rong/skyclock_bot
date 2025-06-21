@@ -1,4 +1,4 @@
-# bot.py - Enhanced with Shard API Integration
+# bot.py - Enhanced Shard Data Handling
 import os
 import pytz
 import logging
@@ -289,21 +289,41 @@ def settings_menu(message):
 def get_shard_data():
     global shard_data_cache, last_shard_fetch
     
-    # Refresh cache every 6 hours
-    if (not shard_data_cache or 
-        not last_shard_fetch or 
-        (datetime.now() - last_shard_fetch).seconds > 21600):
-        
-        try:
-            response = requests.get(SHARD_API_URL, timeout=10)
+    try:
+        # Refresh cache every 2 hours
+        if (not shard_data_cache or 
+            not last_shard_fetch or 
+            (datetime.now() - last_shard_fetch).seconds > 7200):
+            
+            logger.info("Fetching shard data from API...")
+            response = requests.get(SHARD_API_URL, timeout=15)
             response.raise_for_status()
-            shard_data_cache = response.json()
+            
+            # Validate the response structure
+            data = response.json()
+            if not isinstance(data, list) or len(data) == 0:
+                raise ValueError("Invalid shard data format - not a list or empty")
+                
+            # Ensure required fields exist
+            required_fields = ['date', 'realm', 'area', 'location', 'notes', 'image']
+            if not all(field in data[0] for field in required_fields):
+                raise ValueError("Missing required fields in shard data")
+                
+            shard_data_cache = data
             last_shard_fetch = datetime.now()
-            logger.info("Fetched fresh shard data from API")
-        except Exception as e:
-            logger.error(f"Failed to fetch shard data: {str(e)}")
-            if not shard_data_cache:
-                return None
+            logger.info(f"Fetched {len(data)} shard records")
+            return shard_data_cache
+    
+    except requests.exceptions.RequestException as e:
+        logger.error(f"Network error fetching shard data: {str(e)}")
+        if not shard_data_cache:
+            logger.error("No cached data available")
+            return None
+            
+    except Exception as e:
+        logger.error(f"Error processing shard data: {str(e)}")
+        if not shard_data_cache:
+            return None
     
     return shard_data_cache
 
@@ -321,8 +341,27 @@ def send_shard_info(chat_id, user_id, target_date=None):
         target_date = datetime.now(user_tz).date()
     
     shard_data = get_shard_data()
+    
+    # Calculate next event time regardless of API status
+    now = datetime.now(user_tz)
+    event_times = [now.replace(hour=h, minute=5, second=0, microsecond=0) 
+                  for h in range(0, 24, 2)]
+    next_event = next((et for et in event_times if et > now), event_times[0] + timedelta(days=1))
+    hrs, mins = divmod((next_event - now).seconds // 60, 60)
+    
     if not shard_data:
-        bot.send_message(chat_id, "⚠️ Shard data is currently unavailable. Please try again later.")
+        # If API fails, show a generic message with next event times
+        message = (
+            "⚠️ Couldn't fetch shard details, but shards appear every 2 hours at :05\n\n"
+            f"⏱ <b>Next Shard Event:</b> {format_time(next_event, fmt)} ({hrs}h {mins}m)\n\n"
+            "Please try again later for location details."
+        )
+        
+        bot.send_message(
+            chat_id, 
+            message, 
+            parse_mode='HTML'
+        )
         return
     
     # Find shard for target date
@@ -330,61 +369,68 @@ def send_shard_info(chat_id, user_id, target_date=None):
     shard = next((s for s in shard_data if s['date'] == target_str), None)
     
     if not shard:
-        bot.send_message(chat_id, f"❌ No shard data found for {target_date.strftime('%b %d, %Y')}")
-        return
+        # Try to find the closest available date
+        try:
+            all_dates = [datetime.strptime(s['date'], '%Y-%m-%d').date() for s in shard_data]
+            closest_date = min(all_dates, key=lambda d: abs(d - target_date))
+            shard = next(s for s in shard_data if s['date'] == closest_date.strftime('%Y-%m-%d'))
+            target_date = closest_date
+        except Exception as e:
+            logger.error(f"Couldn't find shard for {target_str}: {str(e)}")
+            bot.send_message(chat_id, f"❌ No shard data found for {target_date.strftime('%b %d, %Y')}")
+            return
     
     # Format message
     message = (
         f"💎 <b>Shard - {target_date.strftime('%b %d, %Y')}</b>\n\n"
-        f"<b>Realm:</b> {shard['realm']}\n"
-        f"<b>Area:</b> {shard['area']}\n"
-        f"<b>Location:</b> {shard['location']}\n"
-        f"<b>Notes:</b> {shard['notes']}\n\n"
-        f"<a href='{shard['image']}'>View Location Image</a>"
+        f"<b>Realm:</b> {shard.get('realm', 'Unknown')}\n"
+        f"<b>Area:</b> {shard.get('area', 'Unknown')}\n"
+        f"<b>Location:</b> {shard.get('location', 'Check in-game')}\n"
+        f"<b>Notes:</b> {shard.get('notes', 'No additional info')}\n\n"
     )
+    
+    # Add image link if available
+    if shard.get('image'):
+        message += f"<a href='{shard['image']}'>View Location Image</a>\n\n"
     
     # Create navigation buttons
     keyboard = telebot.types.InlineKeyboardMarkup()
     
     # Previous button
     prev_date = target_date - timedelta(days=1)
-    keyboard.add(
-        telebot.types.InlineKeyboardButton(
-            "⬅️ Previous", 
-            callback_data=f"shard:{prev_date}"
-        ),
-        telebot.types.InlineKeyboardButton(
-            "Next ➡️", 
-            callback_data=f"shard:{target_date + timedelta(days=1)}"
-        )
+    keyboard.row(
+        telebot.types.InlineKeyboardButton("⬅️ Previous", callback_data=f"shard:{prev_date}"),
+        telebot.types.InlineKeyboardButton("Next ➡️", callback_data=f"shard:{target_date + timedelta(days=1)}")
     )
     
     # Add today button if not viewing today
     today = datetime.now(user_tz).date()
     if target_date != today:
-        keyboard.add(
-            telebot.types.InlineKeyboardButton(
-                "⏩ Today", 
-                callback_data=f"shard:{today}"
-            )
-        )
+        keyboard.add(telebot.types.InlineKeyboardButton("⏩ Today", callback_data=f"shard:{today}"))
     
     # Add next event time
-    now = datetime.now(user_tz)
-    event_times = [now.replace(hour=h, minute=5, second=0, microsecond=0) 
-                  for h in range(0, 24, 2)]
-    next_event = next((et for et in event_times if et > now), event_times[0] + timedelta(days=1))
-    hrs, mins = divmod((next_event - now).seconds // 60, 60)
+    message += f"⏱ <b>Next Shard Event:</b> {format_time(next_event, fmt)} ({hrs}h {mins}m)"
     
-    message += f"\n\n⏱ <b>Next Shard Event:</b> {format_time(next_event, fmt)} ({hrs}h {mins}m)"
-    
-    bot.send_message(
-        chat_id, 
-        message, 
-        parse_mode='HTML', 
-        disable_web_page_preview=True,
-        reply_markup=keyboard
-    )
+    try:
+        bot.send_message(
+            chat_id, 
+            message, 
+            parse_mode='HTML', 
+            disable_web_page_preview=True,
+            reply_markup=keyboard
+        )
+    except Exception as e:
+        logger.error(f"Error sending shard info: {str(e)}")
+        # Fallback without HTML formatting
+        plain_message = (
+            f"💎 Shard - {target_date.strftime('%b %d, %Y')}\n\n"
+            f"Realm: {shard.get('realm', 'Unknown')}\n"
+            f"Area: {shard.get('area', 'Unknown')}\n"
+            f"Location: {shard.get('location', 'Check in-game')}\n"
+            f"Notes: {shard.get('notes', 'No additional info')}\n\n"
+            f"Next Shard Event: {format_time(next_event, fmt)} ({hrs}h {mins}m)"
+        )
+        bot.send_message(chat_id, plain_message, reply_markup=keyboard)
 
 # ===================== SHARD HANDLERS =========================
 @bot.callback_query_handler(func=lambda call: call.data.startswith('shard:'))
@@ -1154,9 +1200,19 @@ if __name__ == '__main__':
     except Exception as e:
         logger.error(f"Error scheduling existing reminders: {str(e)}")
     
-    # Pre-fetch shard data
+    # Pre-fetch shard data with retry
     logger.info("Fetching initial shard data...")
-    get_shard_data()
+    max_retries = 3
+    for attempt in range(max_retries):
+        try:
+            shard_data = get_shard_data()
+            if shard_data:
+                logger.info(f"Successfully loaded {len(shard_data)} shard records")
+                break
+            else:
+                logger.warning(f"Shard data not available (attempt {attempt+1}/{max_retries})")
+        except Exception as e:
+            logger.error(f"Error fetching shard data: {str(e)}")
     
     logger.info("Setting up webhook...")
     bot.remove_webhook()
