@@ -2,7 +2,7 @@
 import os
 import psycopg2
 import logging
-from psycopg2 import errors as psycopg2_errors
+import pytz
 
 logger = logging.getLogger(__name__)
 DB_URL = os.getenv("DATABASE_URL") or "postgresql://user:pass@host:port/db"
@@ -41,16 +41,6 @@ def init_db():
                 created_at TIMESTAMP DEFAULT NOW()
             );
             """)
-
-            cur.execute("""
-            CREATE TABLE IF NOT EXISTS shard_data (
-                phase INT PRIMARY KEY,
-                realm TEXT NOT NULL,
-                area TEXT NOT NULL,
-                type TEXT NOT NULL,
-                candles REAL NOT NULL
-            );
-            """)
             
             # Add any missing columns
             try:
@@ -70,7 +60,6 @@ def init_db():
             except:
                 pass  # Already exists
             
-            cur.execute("CREATE INDEX IF NOT EXISTS idx_shard_data_phase ON shard_data(phase)")
             conn.commit()
 
 def get_user(user_id):

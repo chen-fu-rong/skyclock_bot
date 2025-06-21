@@ -5,7 +5,6 @@ from bot import app, bot
 from services.database import init_db
 from services.scheduler import scheduler, setup_scheduled_tasks
 from handlers import register_handlers
-from services.shard_service import initialize_shard_cache
 
 # Configure logging
 logging.basicConfig(
@@ -23,10 +22,6 @@ if __name__ == '__main__':
     init_db()
     logger.info("Database initialized")
 
-    # Initialize shard cache FIRST
-    logger.info("Initializing shard cache...")
-    initialize_shard_cache()
-    
     logger.info("Setting up scheduled tasks...")
     setup_scheduled_tasks()
     

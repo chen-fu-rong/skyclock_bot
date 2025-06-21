@@ -287,7 +287,6 @@ def register_admin_handlers(bot, admin_user_id):
         
         send_admin_menu(bot, chat_id)
 
-    @bot.message_handler(func=lambda msg: msg.text == '🔄 Refresh Shard Data' and is_admin(msg.from_user.id))
     def handle_refresh_shard_data(message):
         from services.database import update_last_interaction
         update_last_interaction(message.from_user.id)
@@ -296,7 +295,6 @@ def register_admin_handlers(bot, admin_user_id):
         else:
             bot.send_message(message.chat.id, "⚠️ Failed to refresh shard data")
 
-    @bot.message_handler(func=lambda msg: msg.text == '✅ Validate Predictions' and is_admin(msg.from_user.id))
     def handle_validate_predictions(message):
         from services.database import update_last_interaction
         update_last_interaction(message.from_user.id)
