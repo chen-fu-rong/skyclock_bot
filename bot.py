@@ -1,4 +1,4 @@
-# bot.py - Enhanced Shard Data Handling
+# bot.py - Enhanced Shard Prediction System (Complete)
 import os
 import pytz
 import logging
@@ -6,6 +6,7 @@ import traceback
 import psycopg2
 import psutil
 import requests
+import re
 from flask import Flask, request
 import telebot
 from apscheduler.schedulers.background import BackgroundScheduler
@@ -29,6 +30,7 @@ WEBHOOK_URL = os.getenv("WEBHOOK_URL") or "https://skyclock-bot.onrender.com/web
 DB_URL = os.getenv("DATABASE_URL") or "postgresql://user:pass@host:port/db"
 ADMIN_USER_ID = os.getenv("ADMIN_USER_ID") or "YOUR_ADMIN_USER_ID"
 SHARD_API_URL = "https://sky-shards.pages.dev/data/shard_locations.json"
+SHARD_MAP_URL = "https://raw.githubusercontent.com/PlutoyDev/sky-shards/production/src/data/shard.ts"
 
 bot = telebot.TeleBot(API_TOKEN)
 app = Flask(__name__)
@@ -41,9 +43,466 @@ start_time = datetime.now()
 # Sky timezone
 SKY_TZ = pytz.timezone('UTC')
 
-# Shard data cache
-shard_data_cache = None
-last_shard_fetch = None
+# ====================== SHARD PREDICTION ENGINE ======================
+SHARD_START_DATE = datetime(2022, 11, 14, tzinfo=pytz.UTC)
+CYCLE_DAYS = 112
+SHARD_TIMES_UTC = [2.25, 6.25, 10.25, 14.25, 18.25, 22.25]  # Hours
+
+# COMPLETE PHASE MAPPING (112 phases)
+DEFAULT_PHASE_MAP = {
+    0: {"realm": "Prairie", "area": "Village", "type": "Black"},
+    1: {"realm": "Prairie", "area": "Caves", "type": "Black"},
+    2: {"realm": "Forest", "area": "BrokenBridge", "type": "Red"},
+    3: {"realm": "Forest", "area": "ElevatedClearing", "type": "Black"},
+    4: {"realm": "Valley", "area": "Village", "type": "Black"},
+    5: {"realm": "Valley", "area": "IceRink", "type": "Red"},
+    6: {"realm": "Wasteland", "area": "Battlefield", "type": "Red"},
+    7: {"realm": "Wasteland", "area": "Graveyard", "type": "Red"},
+    8: {"realm": "Vault", "area": "FirstFloor", "type": "Black"},
+    9: {"realm": "Prairie", "area": "BirdNest", "type": "Black"},
+    10: {"realm": "Prairie", "area": "ButterflyFields", "type": "Red"},
+    11: {"realm": "Forest", "area": "Boneyard", "type": "Red"},
+    12: {"realm": "Forest", "area": "ForestBrook", "type": "Black"},
+    13: {"realm": "Valley", "area": "HermitValley", "type": "Red"},
+    14: {"realm": "Valley", "area": "VillageOfDreams", "type": "Red"},
+    15: {"realm": "Wasteland", "area": "ForgottenArk", "type": "Black"},
+    16: {"realm": "Wasteland", "area": "CrabField", "type": "Black"},
+    17: {"realm": "Vault", "area": "SecondFloor", "type": "Red"},
+    18: {"realm": "Prairie", "area": "Sanctuary", "type": "Black"},
+    19: {"realm": "Forest", "area": "Gloom", "type": "Black"},
+    20: {"realm": "Forest", "area": "Treehouse", "type": "Red"},
+    21: {"realm": "Valley", "area": "DreamVillage", "type": "Red"},
+    22: {"realm": "Valley", "area": "ValleyArena", "type": "Black"},
+    23: {"realm": "Wasteland", "area": "Battlefield", "type": "Black"},
+    24: {"realm": "Wasteland", "area": "Graveyard", "type": "Red"},
+    25: {"realm": "Vault", "area": "ThirdFloor", "type": "Red"},
+    26: {"realm": "Vault", "area": "StarlightDescent", "type": "Black"},
+    27: {"realm": "Prairie", "area": "Caves", "type": "Black"},
+    28: {"realm": "Forest", "area": "ElevatedClearing", "type": "Red"},
+    29: {"realm": "Valley", "area": "Village", "type": "Red"},
+    30: {"realm": "Valley", "area": "IceRink", "type": "Black"},
+    31: {"realm": "Wasteland", "area": "Battlefield", "type": "Black"},
+    32: {"realm": "Wasteland", "area": "Graveyard", "type": "Red"},
+    33: {"realm": "Vault", "area": "FirstFloor", "type": "Red"},
+    34: {"realm": "Prairie", "area": "BirdNest", "type": "Black"},
+    35: {"realm": "Prairie", "area": "ButterflyFields", "type": "Black"},
+    36: {"realm": "Forest", "area": "Boneyard", "type": "Red"},
+    37: {"realm": "Forest", "area": "ForestBrook", "type": "Red"},
+    38: {"realm": "Valley", "area": "HermitValley", "type": "Black"},
+    39: {"realm": "Valley", "area": "VillageOfDreams", "type": "Black"},
+    40: {"realm": "Wasteland", "area": "ForgottenArk", "type": "Red"},
+    41: {"realm": "Wasteland", "area": "CrabField", "type": "Red"},
+    42: {"realm": "Vault", "area": "SecondFloor", "type": "Black"},
+    43: {"realm": "Prairie", "area": "Sanctuary", "type": "Black"},
+    44: {"realm": "Forest", "area": "Gloom", "type": "Red"},
+    45: {"realm": "Forest", "area": "Treehouse", "type": "Red"},
+    46: {"realm": "Valley", "area": "DreamVillage", "type": "Black"},
+    47: {"realm": "Valley", "area": "ValleyArena", "type": "Black"},
+    48: {"realm": "Wasteland", "area": "Battlefield", "type": "Red"},
+    49: {"realm": "Wasteland", "area": "Graveyard", "type": "Red"},
+    50: {"realm": "Vault", "area": "ThirdFloor", "type": "Black"},
+    51: {"realm": "Vault", "area": "StarlightDescent", "type": "Black"},
+    52: {"realm": "Prairie", "area": "Caves", "type": "Red"},
+    53: {"realm": "Forest", "area": "ElevatedClearing", "type": "Red"},
+    54: {"realm": "Vault", "area": "StarlightDescent", "type": "Red"},
+    55: {"realm": "Wasteland", "area": "Graveyard", "type": "Red"},
+    56: {"realm": "Prairie", "area": "ButterflyFields", "type": "Black"},
+    57: {"realm": "Forest", "area": "ForestBrook", "type": "Black"},
+    58: {"realm": "Valley", "area": "VillageOfDreams", "type": "Red"},
+    59: {"realm": "Wasteland", "area": "ForgottenArk", "type": "Red"},
+    60: {"realm": "Vault", "area": "Archives", "type": "Black"},
+    61: {"realm": "Prairie", "area": "Sanctuary", "type": "Black"},
+    62: {"realm": "Forest", "area": "HiddenForestBrokenBridge", "type": "Red"},
+    63: {"realm": "Valley", "area": "ValleyIceRink", "type": "Red"},
+    64: {"realm": "Wasteland", "area": "CrabField", "type": "Black"},
+    65: {"realm": "Vault", "area": "FirstFloor", "type": "Black"},
+    66: {"realm": "Prairie", "area": "BirdNest", "type": "Red"},
+    67: {"realm": "Forest", "area": "Boneyard", "type": "Red"},
+    68: {"realm": "Valley", "area": "HermitValley", "type": "Black"},
+    69: {"realm": "Wasteland", "area": "Battlefield", "type": "Black"},
+    70: {"realm": "Vault", "area": "SecondFloor", "type": "Red"},
+    71: {"realm": "Prairie", "area": "Caves", "type": "Red"},
+    72: {"realm": "Forest", "area": "ElevatedClearing", "type": "Black"},
+    73: {"realm": "Valley", "area": "Village", "type": "Black"},
+    74: {"realm": "Wasteland", "area": "Graveyard", "type": "Red"},
+    75: {"realm": "Vault", "area": "ThirdFloor", "type": "Red"},
+    76: {"realm": "Prairie", "area": "ButterflyFields", "type": "Black"},
+    77: {"realm": "Forest", "area": "ForestBrook", "type": "Black"},
+    78: {"realm": "Valley", "area": "IceRink", "type": "Red"},
+    79: {"realm": "Wasteland", "area": "ForgottenArk", "type": "Red"},
+    80: {"realm": "Vault", "area": "StarlightDescent", "type": "Black"},
+    81: {"realm": "Prairie", "area": "Sanctuary", "type": "Black"},
+    82: {"realm": "Forest", "area": "Treehouse", "type": "Red"},
+    83: {"realm": "Valley", "area": "DreamVillage", "type": "Red"},
+    84: {"realm": "Wasteland", "area": "CrabField", "type": "Black"},
+    85: {"realm": "Vault", "area": "FirstFloor", "type": "Black"},
+    86: {"realm": "Prairie", "area": "BirdNest", "type": "Red"},
+    87: {"realm": "Forest", "area": "Boneyard", "type": "Red"},
+    88: {"realm": "Valley", "area": "HermitValley", "type": "Black"},
+    89: {"realm": "Wasteland", "area": "Battlefield", "type": "Black"},
+    90: {"realm": "Vault", "area": "SecondFloor", "type": "Red"},
+    91: {"realm": "Prairie", "area": "Caves", "type": "Red"},
+    92: {"realm": "Forest", "area": "ElevatedClearing", "type": "Black"},
+    93: {"realm": "Valley", "area": "Village", "type": "Black"},
+    94: {"realm": "Wasteland", "area": "Graveyard", "type": "Red"},
+    95: {"realm": "Vault", "area": "ThirdFloor", "type": "Red"},
+    96: {"realm": "Prairie", "area": "ButterflyFields", "type": "Black"},
+    97: {"realm": "Forest", "area": "ForestBrook", "type": "Black"},
+    98: {"realm": "Valley", "area": "IceRink", "type": "Red"},
+    99: {"realm": "Wasteland", "area": "ForgottenArk", "type": "Red"},
+    100: {"realm": "Vault", "area": "Archives", "type": "Black"},
+    101: {"realm": "Prairie", "area": "Sanctuary", "type": "Black"},
+    102: {"realm": "Forest", "area": "HiddenForestBrokenBridge", "type": "Red"},
+    103: {"realm": "Valley", "area": "ValleyIceRink", "type": "Red"},
+    104: {"realm": "Wasteland", "area": "CrabField", "type": "Black"},
+    105: {"realm": "Vault", "area": "FirstFloor", "type": "Black"},
+    106: {"realm": "Prairie", "area": "BirdNest", "type": "Red"},
+    107: {"realm": "Forest", "area": "Boneyard", "type": "Red"},
+    108: {"realm": "Valley", "area": "HermitValley", "type": "Black"},
+    109: {"realm": "None", "area": "RestDay", "type": "None"},
+    110: {"realm": "None", "area": "RestDay", "type": "None"},
+    111: {"realm": "None", "area": "RestDay", "type": "None"}
+}
+
+# Global state
+phase_map_cache = DEFAULT_PHASE_MAP
+last_shard_refresh = None
+cycle_version = 0  # Tracks how many full cycles have passed
+
+# ====================== SHARD CALCULATION FUNCTIONS ======================
+def calculate_phase(target_date):
+    """Calculate shard phase for a given date"""
+    if isinstance(target_date, datetime):
+        target_date = target_date.date()
+    days_diff = (target_date - SHARD_START_DATE.date()).days
+    return days_diff % CYCLE_DAYS
+
+def get_shard_info(target_date):
+    """Get complete shard info for a date"""
+    phase = calculate_phase(target_date)
+    
+    # Special handling for rest days
+    if phase >= 109:
+        return {
+            "realm": "None",
+            "area": "Rest Day",
+            "type": "None",
+            "phase": phase,
+            "is_rest_day": True
+        }
+    
+    # Get info from cache
+    info = phase_map_cache.get(phase, {})
+    
+    # Calculate shard type if missing
+    if "type" not in info:
+        info["type"] = calculate_shard_type(phase)
+    
+    return {
+        "realm": info.get("realm", "Unknown"),
+        "area": info.get("area", "Unknown"),
+        "type": info["type"],
+        "phase": phase,
+        "is_rest_day": False
+    }
+
+def calculate_shard_type(phase):
+    """Fallback type calculation if not in map"""
+    pattern = {
+        0: "Black", 1: "Black", 2: "Red", 3: "Black", 4: "Black",
+        5: "Red", 6: "Red", 7: "Red", 8: "Black", 9: "Black",
+        10: "Red", 11: "Red", 12: "Black", 13: "Red", 14: "Red", 15: "Black"
+    }
+    return pattern.get(phase % 16, "Unknown")
+
+# ====================== AUTO-UPDATE MECHANISMS ======================
+def refresh_phase_map():
+    """Fetch latest phase map from GitHub"""
+    global phase_map_cache, cycle_version, last_shard_refresh
+    
+    try:
+        logger.info("Fetching latest phase map from GitHub...")
+        response = requests.get(SHARD_MAP_URL, timeout=10)
+        response.raise_for_status()
+        
+        # Extract the phase map from TypeScript file
+        content = response.text
+        start_idx = content.find("export const PHASE_TO_SHARD: Record<number, ShardLocation> = {")
+        end_idx = content.find("};", start_idx)
+        
+        if start_idx == -1 or end_idx == -1:
+            raise ValueError("Phase map not found in file")
+            
+        ts_map = content[start_idx:end_idx+1]
+        
+        # Convert to JSON-friendly format
+        json_map = {}
+        for line in ts_map.splitlines():
+            if ":" in line:
+                phase_str = line.split(":")[0].strip()
+                if phase_str.isdigit():
+                    phase = int(phase_str)
+                    # Extract realm and area
+                    realm_match = re.search(r"realm:\s+Realm\.(\w+)", line)
+                    area_match = re.search(r"area:\s+Area\.(\w+)", line)
+                    type_match = re.search(r"type:\s+ShardType\.(\w+)", line)
+                    
+                    if realm_match and area_match:
+                        json_map[phase] = {
+                            "realm": realm_match.group(1),
+                            "area": area_match.group(1),
+                            "type": type_match.group(1) if type_match else "Unknown"
+                        }
+        
+        if json_map:
+            phase_map_cache = json_map
+            last_shard_refresh = datetime.now()
+            logger.info(f"Updated phase map with {len(json_map)} entries")
+            
+            # Check for cycle reset
+            current_phase = calculate_phase(datetime.now(pytz.UTC))
+            global_cycles = (datetime.now(pytz.UTC).date() - SHARD_START_DATE.date()).days // CYCLE_DAYS
+            if global_cycles > cycle_version:
+                cycle_version = global_cycles
+                logger.warning(f"New shard cycle detected! Version: {cycle_version}")
+                notify_admin(f"⚠️ New shard cycle detected! Now on version {cycle_version}")
+            
+            return True
+    except Exception as e:
+        logger.error(f"Error refreshing phase map: {str(e)}")
+    
+    return False
+
+def validate_shard_predictions(days=7):
+    """Compare predictions with official source"""
+    try:
+        logger.info(f"Validating shard predictions for {days} days...")
+        today = datetime.now(pytz.UTC).date()
+        discrepancies = []
+        
+        # Get official data
+        official_data = {}
+        response = requests.get(SHARD_API_URL, timeout=15)
+        if response.status_code == 200:
+            for item in response.json():
+                official_data[item["date"]] = item
+        
+        # Check specified days
+        for i in range(days):
+            check_date = today + timedelta(days=i)
+            date_str = check_date.strftime("%Y-%m-%d")
+            
+            # Our prediction
+            our_pred = get_shard_info(check_date)
+            
+            # Official data
+            official = official_data.get(date_str, {})
+            
+            # Compare
+            if official:
+                if (our_pred["realm"] != official.get("realm", "") or
+                    our_pred["area"] != official.get("area", "") or
+                    our_pred["type"] != official.get("type", "")):
+                    discrepancies.append({
+                        "date": date_str,
+                        "our": our_pred,
+                        "official": official
+                    })
+        
+        if discrepancies:
+            report = "🔴 Shard Prediction Discrepancies:\n\n"
+            for d in discrepancies:
+                report += (
+                    f"📅 {d['date']}:\n"
+                    f"  Our: {d['our']['realm']}/{d['our']['area']}/{d['our']['type']}\n"
+                    f"  Official: {d['official'].get('realm', '?')}/{d['official'].get('area', '?')}/{d['official'].get('type', '?')}\n\n"
+                )
+            notify_admin(report)
+            logger.warning(f"Found {len(discrepancies)} prediction discrepancies")
+            return len(discrepancies)
+            
+        logger.info("All predictions match official data")
+        return 0
+    except Exception as e:
+        logger.error(f"Validation failed: {str(e)}")
+        return -1
+
+# ====================== NOTIFICATION HELPERS ======================
+def notify_admin(message):
+    """Send important notifications to admin"""
+    try:
+        bot.send_message(ADMIN_USER_ID, message)
+    except Exception as e:
+        logger.error(f"Failed to notify admin: {str(e)}")
+
+# ====================== SHARD INFO DISPLAY ======================
+def send_shard_info(chat_id, user_id, target_date=None):
+    user = get_user(user_id)
+    if not user: 
+        bot.send_message(chat_id, "Please set your timezone first with /start")
+        return
+        
+    tz, fmt = user
+    user_tz = pytz.timezone(tz)
+    
+    # Default to today if no date specified
+    if not target_date:
+        target_date = datetime.now(user_tz).date()
+    
+    # Get shard info
+    shard_info = get_shard_info(target_date)
+    
+    # Format message
+    if shard_info["is_rest_day"]:
+        message = (
+            f"💎 <b>Shard - {target_date.strftime('%b %d, %Y')}</b>\n\n"
+            "🌿 <b>Rest Day</b>\n"
+            "No shard eruptions today"
+        )
+    else:
+        type_emoji = "🔴" if shard_info["type"] == "Red" else "⚫"
+        message = (
+            f"💎 <b>Shard - {target_date.strftime('%b %d, %Y')}</b>\n\n"
+            f"<b>Realm:</b> {shard_info['realm']}\n"
+            f"<b>Area:</b> {shard_info['area']}\n"
+            f"<b>Type:</b> {type_emoji} {shard_info['type']}\n"
+        )
+    
+    # Add eruption schedule
+    message += "\n⏰ <b>Eruption Schedule (UTC):</b>\n"
+    for hour in SHARD_TIMES_UTC:
+        hours = int(hour)
+        minutes = int((hour - hours) * 60)
+        message += f"• {hours:02d}:{minutes:02d}\n"
+    
+    # Add next eruption in user's timezone
+    next_eruption = get_next_eruption(user_tz)
+    if next_eruption:
+        user_time = format_time(next_eruption, fmt)
+        time_diff = next_eruption - datetime.now(user_tz)
+        hours, remainder = divmod(int(time_diff.total_seconds()), 3600)
+        minutes = remainder // 60
+        message += f"\n⏱ <b>Next Eruption:</b> {user_time} ({hours}h {minutes}m)"
+    
+    # Create navigation buttons
+    keyboard = telebot.types.InlineKeyboardMarkup()
+    prev_date = target_date - timedelta(days=1)
+    next_date = target_date + timedelta(days=1)
+    
+    keyboard.row(
+        telebot.types.InlineKeyboardButton("⬅️ Previous", callback_data=f"shard:{prev_date}"),
+        telebot.types.InlineKeyboardButton("Next ➡️", callback_data=f"shard:{next_date}")
+    )
+    
+    # Add today button if not viewing today
+    today = datetime.now(user_tz).date()
+    if target_date != today:
+        keyboard.add(telebot.types.InlineKeyboardButton("⏩ Today", callback_data=f"shard:{today}"))
+    
+    try:
+        bot.send_message(
+            chat_id, 
+            message, 
+            parse_mode='HTML', 
+            reply_markup=keyboard
+        )
+    except Exception as e:
+        logger.error(f"Error sending shard info: {str(e)}")
+        bot.send_message(chat_id, "⚠️ Failed to load shard data")
+
+def get_next_eruption(user_tz):
+    """Calculate next eruption in user's timezone"""
+    now = datetime.now(pytz.UTC)
+    today = now.date()
+    
+    # Find next eruption UTC time
+    for hour in SHARD_TIMES_UTC:
+        hours = int(hour)
+        minutes = int((hour - hours) * 60)
+        eruption_utc = datetime(
+            today.year, today.month, today.day,
+            hours, minutes, 0, tzinfo=pytz.UTC
+        )
+        
+        if eruption_utc > now:
+            return eruption_utc.astimezone(user_tz)
+    
+    # If none today, use first tomorrow
+    tomorrow = today + timedelta(days=1)
+    hours = int(SHARD_TIMES_UTC[0])
+    minutes = int((SHARD_TIMES_UTC[0] - hours) * 60)
+    eruption_utc = datetime(
+        tomorrow.year, tomorrow.month, tomorrow.day,
+        hours, minutes, 0, tzinfo=pytz.UTC
+    )
+    
+    return eruption_utc.astimezone(user_tz)
+
+# ====================== SCHEDULED TASKS ======================
+def setup_scheduled_tasks():
+    """Setup recurring maintenance tasks"""
+    # Daily validation at 00:05 UTC
+    scheduler.add_job(
+        lambda: validate_shard_predictions(7),
+        'cron',
+        hour=0,
+        minute=5,
+        name="daily_shard_validation"
+    )
+    
+    # Weekly phase map refresh
+    scheduler.add_job(
+        refresh_phase_map,
+        'cron',
+        day_of_week='sun',
+        hour=3,
+        minute=0,
+        name="weekly_phase_map_refresh"
+    )
+    
+    # Monthly full validation
+    scheduler.add_job(
+        lambda: validate_shard_predictions(30),
+        'cron',
+        day=1,
+        hour=1,
+        minute=0,
+        name="monthly_full_validation"
+    )
+    
+    logger.info("Scheduled tasks registered")
+
+# ====================== ADMIN COMMANDS ======================
+@bot.message_handler(func=lambda msg: msg.text == '🔄 Refresh Shard Data' and is_admin(msg.from_user.id))
+def handle_refresh_shard_data(message):
+    update_last_interaction(message.from_user.id)
+    if refresh_phase_map():
+        bot.send_message(message.chat.id, "✅ Shard data refreshed successfully!")
+    else:
+        bot.send_message(message.chat.id, "⚠️ Failed to refresh shard data")
+
+@bot.message_handler(func=lambda msg: msg.text == '✅ Validate Predictions' and is_admin(msg.from_user.id))
+def handle_validate_predictions(message):
+    update_last_interaction(message.from_user.id)
+    days = 7  # Default validation period
+    msg = bot.send_message(message.chat.id, f"Enter number of days to validate (1-30, default {days}):")
+    bot.register_next_step_handler(msg, process_validation_request)
+
+def process_validation_request(message):
+    try:
+        days = int(message.text.strip())
+        if not 1 <= days <= 30:
+            days = 7
+    except ValueError:
+        days = 7
+    
+    count = validate_shard_predictions(days)
+    if count == 0:
+        bot.send_message(message.chat.id, f"✅ All predictions match for {days} days!")
+    elif count > 0:
+        bot.send_message(message.chat.id, f"⚠️ Found {count} discrepancies! Check admin notifications")
+    else:
+        bot.send_message(message.chat.id, "❌ Validation failed")
 
 # ========================== DATABASE ===========================
 def get_db():
@@ -185,6 +644,7 @@ def send_admin_menu(chat_id):
     markup = telebot.types.ReplyKeyboardMarkup(resize_keyboard=True)
     markup.row('👥 User Stats', '📢 Broadcast')
     markup.row('⏰ Manage Reminders', '📊 System Status')
+    markup.row('🔄 Refresh Shard Data', '✅ Validate Predictions')
     markup.row('🔍 Find User')
     markup.row('🔙 Main Menu')
     bot.send_message(chat_id, "Admin Panel:", reply_markup=markup)
@@ -285,153 +745,6 @@ def settings_menu(message):
     _, fmt = user
     send_settings_menu(message.chat.id, fmt)
 
-# ===================== SHARD FUNCTIONS =========================
-def get_shard_data():
-    global shard_data_cache, last_shard_fetch
-    
-    try:
-        # Refresh cache every 2 hours
-        if (not shard_data_cache or 
-            not last_shard_fetch or 
-            (datetime.now() - last_shard_fetch).seconds > 7200):
-            
-            logger.info("Fetching shard data from API...")
-            response = requests.get(SHARD_API_URL, timeout=15)
-            response.raise_for_status()
-            
-            # Validate the response structure
-            data = response.json()
-            if not isinstance(data, list) or len(data) == 0:
-                raise ValueError("Invalid shard data format - not a list or empty")
-                
-            # Ensure required fields exist
-            required_fields = ['date', 'realm', 'area', 'location', 'notes', 'image']
-            if not all(field in data[0] for field in required_fields):
-                raise ValueError("Missing required fields in shard data")
-                
-            shard_data_cache = data
-            last_shard_fetch = datetime.now()
-            logger.info(f"Fetched {len(data)} shard records")
-            return shard_data_cache
-    
-    except requests.exceptions.RequestException as e:
-        logger.error(f"Network error fetching shard data: {str(e)}")
-        if not shard_data_cache:
-            logger.error("No cached data available")
-            return None
-            
-    except Exception as e:
-        logger.error(f"Error processing shard data: {str(e)}")
-        if not shard_data_cache:
-            return None
-    
-    return shard_data_cache
-
-def send_shard_info(chat_id, user_id, target_date=None):
-    user = get_user(user_id)
-    if not user: 
-        bot.send_message(chat_id, "Please set your timezone first with /start")
-        return
-        
-    tz, fmt = user
-    user_tz = pytz.timezone(tz)
-    
-    # Default to today if no date specified
-    if not target_date:
-        target_date = datetime.now(user_tz).date()
-    
-    shard_data = get_shard_data()
-    
-    # Calculate next event time regardless of API status
-    now = datetime.now(user_tz)
-    event_times = [now.replace(hour=h, minute=5, second=0, microsecond=0) 
-                  for h in range(0, 24, 2)]
-    next_event = next((et for et in event_times if et > now), event_times[0] + timedelta(days=1))
-    hrs, mins = divmod((next_event - now).seconds // 60, 60)
-    
-    if not shard_data:
-        # If API fails, show a generic message with next event times
-        message = (
-            "⚠️ Couldn't fetch shard details, but shards appear every 2 hours at :05\n\n"
-            f"⏱ <b>Next Shard Event:</b> {format_time(next_event, fmt)} ({hrs}h {mins}m)\n\n"
-            "Please try again later for location details."
-        )
-        
-        bot.send_message(
-            chat_id, 
-            message, 
-            parse_mode='HTML'
-        )
-        return
-    
-    # Find shard for target date
-    target_str = target_date.strftime('%Y-%m-%d')
-    shard = next((s for s in shard_data if s['date'] == target_str), None)
-    
-    if not shard:
-        # Try to find the closest available date
-        try:
-            all_dates = [datetime.strptime(s['date'], '%Y-%m-%d').date() for s in shard_data]
-            closest_date = min(all_dates, key=lambda d: abs(d - target_date))
-            shard = next(s for s in shard_data if s['date'] == closest_date.strftime('%Y-%m-%d'))
-            target_date = closest_date
-        except Exception as e:
-            logger.error(f"Couldn't find shard for {target_str}: {str(e)}")
-            bot.send_message(chat_id, f"❌ No shard data found for {target_date.strftime('%b %d, %Y')}")
-            return
-    
-    # Format message
-    message = (
-        f"💎 <b>Shard - {target_date.strftime('%b %d, %Y')}</b>\n\n"
-        f"<b>Realm:</b> {shard.get('realm', 'Unknown')}\n"
-        f"<b>Area:</b> {shard.get('area', 'Unknown')}\n"
-        f"<b>Location:</b> {shard.get('location', 'Check in-game')}\n"
-        f"<b>Notes:</b> {shard.get('notes', 'No additional info')}\n\n"
-    )
-    
-    # Add image link if available
-    if shard.get('image'):
-        message += f"<a href='{shard['image']}'>View Location Image</a>\n\n"
-    
-    # Create navigation buttons
-    keyboard = telebot.types.InlineKeyboardMarkup()
-    
-    # Previous button
-    prev_date = target_date - timedelta(days=1)
-    keyboard.row(
-        telebot.types.InlineKeyboardButton("⬅️ Previous", callback_data=f"shard:{prev_date}"),
-        telebot.types.InlineKeyboardButton("Next ➡️", callback_data=f"shard:{target_date + timedelta(days=1)}")
-    )
-    
-    # Add today button if not viewing today
-    today = datetime.now(user_tz).date()
-    if target_date != today:
-        keyboard.add(telebot.types.InlineKeyboardButton("⏩ Today", callback_data=f"shard:{today}"))
-    
-    # Add next event time
-    message += f"⏱ <b>Next Shard Event:</b> {format_time(next_event, fmt)} ({hrs}h {mins}m)"
-    
-    try:
-        bot.send_message(
-            chat_id, 
-            message, 
-            parse_mode='HTML', 
-            disable_web_page_preview=True,
-            reply_markup=keyboard
-        )
-    except Exception as e:
-        logger.error(f"Error sending shard info: {str(e)}")
-        # Fallback without HTML formatting
-        plain_message = (
-            f"💎 Shard - {target_date.strftime('%b %d, %Y')}\n\n"
-            f"Realm: {shard.get('realm', 'Unknown')}\n"
-            f"Area: {shard.get('area', 'Unknown')}\n"
-            f"Location: {shard.get('location', 'Check in-game')}\n"
-            f"Notes: {shard.get('notes', 'No additional info')}\n\n"
-            f"Next Shard Event: {format_time(next_event, fmt)} ({hrs}h {mins}m)"
-        )
-        bot.send_message(chat_id, plain_message, reply_markup=keyboard)
-
 # ===================== SHARD HANDLERS =========================
 @bot.callback_query_handler(func=lambda call: call.data.startswith('shard:'))
 def handle_shard_callback(call):
@@ -486,7 +799,7 @@ def handle_event(message):
             event_times.append(today_user.replace(hour=hour, minute=int(event_schedule.split(':')[1])))
         elif hour_type == 'odd' and hour % 2 == 1:
             event_times.append(today_user.replace(hour=hour, minute=int(event_schedule.split(':')[1])))
-
+    
     # Calculate next occurrences for each event time
     next_occurrences = []
     for et in event_times:
@@ -690,7 +1003,7 @@ def save_reminder(message, event_type, selected_time, is_daily):
 
         with get_db() as conn:
             with conn.cursor() as cur:
-                chat_id = message.chat.id  # Add this line before the query
+                chat_id = message.chat.id
 
                 cur.execute("""
                 INSERT INTO reminders (
@@ -837,7 +1150,7 @@ def send_reminder_notification(user_id, reminder_id, event_type, event_time_utc,
         except:
             pass
 
-# ======================= ADMIN PANEL ===========================
+# ====================== ADMIN PANEL ===========================
 @bot.message_handler(func=lambda msg: msg.text == '👤 Admin Panel' and is_admin(msg.from_user.id))
 def handle_admin_panel(message):
     update_last_interaction(message.from_user.id)
@@ -1093,9 +1406,9 @@ def system_status(message):
         job_count = "N/A"
     
     # Shard cache status
-    shard_status = "✅ Loaded" if shard_data_cache else "❌ Not loaded"
-    if last_shard_fetch:
-        shard_status += f" (Last fetch: {last_shard_fetch.strftime('%Y-%m-%d %H:%M')})"
+    shard_status = "✅ Loaded" if phase_map_cache else "❌ Not loaded"
+    if last_shard_refresh:
+        shard_status += f" (Last refresh: {last_shard_refresh.strftime('%Y-%m-%d %H:%M')})"
     
     text = (
         f"⏱ Uptime: {str(uptime).split('.')[0]}\n"
@@ -1130,14 +1443,12 @@ def process_user_search(message):
                     cur.execute(
                         "SELECT user_id, chat_id, timezone FROM users WHERE user_id = %s",
                         (int(search_term),)
-                    )
                     results = cur.fetchall()
                 # Search by timezone
                 else:
                     cur.execute(
                         "SELECT user_id, chat_id, timezone FROM users WHERE timezone ILIKE %s",
                         (f'%{search_term}%',)
-                    )
                     results = cur.fetchall()
                 
                 if not results:
@@ -1183,7 +1494,19 @@ if __name__ == '__main__':
     init_db()
     logger.info("Database initialized")
     
-    # Schedule existing reminders on startup
+    # Load shard data
+    logger.info("Loading shard data...")
+    refresh_phase_map()
+    
+    # Schedule tasks
+    logger.info("Setting up scheduled tasks...")
+    setup_scheduled_tasks()
+    
+    # Initial validation
+    logger.info("Running initial validation...")
+    validate_shard_predictions(7)
+    
+    # Schedule existing reminders
     logger.info("Scheduling existing reminders...")
     try:
         with get_db() as conn:
@@ -1199,20 +1522,6 @@ if __name__ == '__main__':
                 logger.info(f"Scheduled {len(reminders)} existing reminders")
     except Exception as e:
         logger.error(f"Error scheduling existing reminders: {str(e)}")
-    
-    # Pre-fetch shard data with retry
-    logger.info("Fetching initial shard data...")
-    max_retries = 3
-    for attempt in range(max_retries):
-        try:
-            shard_data = get_shard_data()
-            if shard_data:
-                logger.info(f"Successfully loaded {len(shard_data)} shard records")
-                break
-            else:
-                logger.warning(f"Shard data not available (attempt {attempt+1}/{max_retries})")
-        except Exception as e:
-            logger.error(f"Error fetching shard data: {str(e)}")
     
     logger.info("Setting up webhook...")
     bot.remove_webhook()
