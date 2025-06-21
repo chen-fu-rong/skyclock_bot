@@ -1779,24 +1779,27 @@ def process_user_search(message):
                     cur.execute(
                         "SELECT user_id, chat_id, timezone FROM users WHERE user_id = %s",
                         (int(search_term),)
+                    )
                     results = cur.fetchall()
                 # Search by timezone
                 else:
                     cur.execute(
                         "SELECT user_id, chat_id, timezone FROM users WHERE timezone ILIKE %s",
                         (f'%{search_term}%',)
+                    )
                     results = cur.fetchall()
-                
+            
                 if not results:
                     bot.send_message(message.chat.id, "❌ No users found")
                     return send_admin_menu(message.chat.id)
-                    
+            
                 response = "🔍 Search Results:\n\n"
                 for i, user in enumerate(results, 1):
                     user_id, chat_id, tz = user
                     response += f"{i}. User ID: {user_id}\nChat ID: {chat_id}\nTimezone: {tz}\n\n"
-                
+            
                 bot.send_message(message.chat.id, response)
+
                 
     except Exception as e:
         logger.error(f"User search error: {str(e)}")
