@@ -76,7 +76,7 @@ DEFAULT_PHASE_MAP = {
     23: {"realm": "Wasteland", "area": "Battlefield", "type": "Black"},
     24: {"realm": "Wasteland", "area": "Graveyard", "type": "Red"},
     25: {"realm": "Vault", "area": "ThirdFloor", "type": "Red"},
-    26: {"realm": "Vault", "area": "StarlightDescent", "type": "Black"},
+    26: {"realm": "Vault", "area": "StarlightDesert", "type": "Black"},
     27: {"realm": "Prairie", "area": "Caves", "type": "Black"},
     28: {"realm": "Forest", "area": "ElevatedClearing", "type": "Red"},
     29: {"realm": "Valley", "area": "Village", "type": "Red"},
@@ -169,6 +169,220 @@ phase_map_cache = DEFAULT_PHASE_MAP
 last_shard_refresh = None
 cycle_version = 0  # Tracks how many full cycles have passed
 
+# ====================== SHARD VALIDATION & UPDATE ======================
+def validate_against_official(start_date, end_date):
+    """
+    Validate our predictions against official data for a date range
+    Returns: (is_valid, discrepancies)
+    """
+    try:
+        # Fetch official data
+        official_data = {}
+        response = requests.get(SHARD_API_URL, timeout=15)
+        if response.status_code == 200:
+            for item in response.json():
+                official_data[item["date"]] = item
+        
+        # Test date range
+        current_date = start_date
+        discrepancies = []
+        
+        while current_date <= end_date:
+            date_str = current_date.strftime("%Y-%m-%d")
+            official = official_data.get(date_str)
+            
+            if not official:
+                current_date += timedelta(days=1)
+                continue
+                
+            # Our prediction
+            our_pred = get_shard_info(current_date)
+            
+            # Skip rest days
+            if our_pred["is_rest_day"]:
+                current_date += timedelta(days=1)
+                continue
+                
+            # Compare
+            mismatch = False
+            details = []
+            
+            if our_pred["realm"] != official.get("realm", ""):
+                mismatch = True
+                details.append(f"Realm: {our_pred['realm']} vs {official.get('realm')}")
+                
+            if our_pred["area"] != official.get("area", ""):
+                mismatch = True
+                details.append(f"Area: {our_pred['area']} vs {official.get('area')}")
+                
+            if our_pred["type"] != official.get("type", ""):
+                mismatch = True
+                details.append(f"Type: {our_pred['type']} vs {official.get('type')}")
+                
+            if mismatch:
+                discrepancies.append({
+                    "date": date_str,
+                    "details": details,
+                    "our": our_pred,
+                    "official": official
+                })
+            
+            current_date += timedelta(days=1)
+        
+        return (len(discrepancies) == 0, discrepancies)
+    
+    except Exception as e:
+        logger.error(f"Validation error: {str(e)}")
+        return (False, [{"error": str(e)}])
+
+def update_shard_data_with_validation():
+    """Update shard data with comprehensive validation"""
+    try:
+        logger.info("Starting validated shard data update...")
+        
+        # Step 1: Fetch official data
+        logger.info("Fetching official shard data...")
+        response = requests.get(SHARD_API_URL, timeout=15)
+        response.raise_for_status()
+        official_data = response.json()
+        
+        if not official_data:
+            raise ValueError("No data returned from official source")
+        
+        # Step 2: Determine validation range (next 30 days)
+        today = datetime.now(pytz.UTC).date()
+        validation_start = today
+        validation_end = today + timedelta(days=30)
+        
+        # Step 3: Validate before processing
+        logger.info(f"Validating predictions from {validation_start} to {validation_end}...")
+        is_valid, discrepancies = validate_against_official(validation_start, validation_end)
+        
+        if not is_valid:
+            error_msg = "❌ Validation failed! Found discrepancies:\n"
+            for d in discrepancies[:5]:  # Show first 5 errors
+                error_msg += f"{d['date']}:\n" + "\n".join(d['details']) + "\n\n"
+            if len(discrepancies) > 5:
+                error_msg += f"... and {len(discrepancies)-5} more\n"
+            
+            logger.error(error_msg)
+            notify_admin(error_msg)
+            return False
+        
+        # Step 4: Process and save data
+        phase_data = {}
+        for item in official_data:
+            try:
+                # Extract phase from date
+                event_date = datetime.strptime(item["date"], "%Y-%m-%d").date()
+                phase = calculate_phase(event_date)
+                
+                # Map to our structure
+                phase_data[phase] = {
+                    "realm": item["realm"],
+                    "area": item["area"],
+                    "type": item["type"],
+                    "candles": 3.5 if item["type"] == "Red" else 2.5
+                }
+            except Exception as e:
+                logger.error(f"Error processing item: {item} - {str(e)}")
+        
+        # Step 5: Save to DB
+        if save_shard_data_to_db(phase_data):
+            # Refresh cache
+            load_shard_data_from_db()
+            logger.info("Shard data updated successfully after validation")
+            return True
+    
+    except Exception as e:
+        logger.error(f"Update with validation failed: {str(e)}")
+    
+    return False
+
+# ====================== ADMIN COMMANDS ======================
+@bot.message_handler(func=lambda msg: msg.text == '🔄 Update Shard Data' and is_admin(msg.from_user.id))
+def handle_update_shard_data(message):
+    update_last_interaction(message.from_user.id)
+    bot.send_message(message.chat.id, "🔍 Validating shard data before update...")
+    
+    if update_shard_data_with_validation():
+        bot.send_message(message.chat.id, "✅ Shard data updated successfully!")
+    else:
+        bot.send_message(message.chat.id, "❌ Update failed! Check admin notifications")
+
+@bot.message_handler(func=lambda msg: msg.text == '✅ Validate Shard Data' and is_admin(msg.from_user.id))
+def handle_validate_shard_data(message):
+    update_last_interaction(message.from_user.id)
+    msg = bot.send_message(
+        message.chat.id,
+        "Enter validation date range (format: YYYY-MM-DD to YYYY-MM-DD) or press /cancel:"
+    )
+    bot.register_next_step_handler(msg, process_validation_range)
+
+def process_validation_range(message):
+    if message.text.strip().lower() == '/cancel':
+        send_admin_menu(message.chat.id)
+        return
+        
+    try:
+        parts = message.text.split(" to ")
+        start_date = datetime.strptime(parts[0].strip(), "%Y-%m-%d").date()
+        end_date = datetime.strptime(parts[1].strip(), "%Y-%m-%d").date()
+        
+        if start_date > end_date:
+            raise ValueError("Start date must be before end date")
+            
+        bot.send_message(
+            message.chat.id,
+            f"🔍 Validating shard data from {start_date} to {end_date}..."
+        )
+        
+        is_valid, discrepancies = validate_against_official(start_date, end_date)
+        
+        if is_valid:
+            bot.send_message(
+                message.chat.id,
+                f"✅ All predictions match official data for {start_date} to {end_date}!"
+            )
+        else:
+            report = f"❌ Found {len(discrepancies)} discrepancies:\n\n"
+            for i, d in enumerate(discrepancies[:10]):  # Show first 10
+                report += f"{d['date']}:\n" + "\n".join(d['details']) + "\n\n"
+            if len(discrepancies) > 10:
+                report += f"... and {len(discrepancies)-10} more\n"
+            
+            # Send summary to user
+            bot.send_message(
+                message.chat.id,
+                f"❌ Found {len(discrepancies)} discrepancies. Details sent to admin."
+            )
+            
+            # Send full report to admin
+            notify_admin(report)
+            
+    except Exception as e:
+        bot.send_message(
+            message.chat.id,
+            f"❌ Validation failed: {str(e)}. Use format: YYYY-MM-DD to YYYY-MM-DD"
+        )
+    
+    send_admin_menu(message.chat.id)
+
+# ====================== SCHEDULED TASKS ======================
+def setup_scheduled_tasks():
+    """Setup recurring maintenance tasks"""
+    # ... existing tasks ...
+    
+    # Weekly shard data update with validation
+    scheduler.add_job(
+        update_shard_data_with_validation,
+        'cron',
+        day_of_week='mon',
+        hour=4,
+        minute=0,
+        name="weekly_validated_shard_update"
+    )
+
 # ====================== SHARD CALCULATION FUNCTIONS ======================
 def calculate_phase(target_date):
     """Calculate shard phase for a given date"""
@@ -181,15 +395,28 @@ def get_shard_info(target_date):
     """Get complete shard info for a date"""
     phase = calculate_phase(target_date)
     
-    # Special handling for rest days
+    # Handle rest days
     if phase >= 109:
         return {
             "realm": "None",
             "area": "Rest Day",
             "type": "None",
+            "candles": 0,
             "phase": phase,
             "is_rest_day": True
         }
+    
+    # Get info from cache
+    info = phase_map_cache.get(phase, {})
+    
+    return {
+        "realm": info.get("realm", "Unknown"),
+        "area": info.get("area", "Unknown"),
+        "type": info.get("type", "Unknown"),
+        "candles": info.get("candles", 0),
+        "phase": phase,
+        "is_rest_day": False
+    }
     
     # Get info from cache
     info = phase_map_cache.get(phase, {})
@@ -470,6 +697,16 @@ def setup_scheduled_tasks():
         name="monthly_full_validation"
     )
     
+    # Weekly shard data update
+    scheduler.add_job(
+        update_shard_data_from_official,
+        'cron',
+        day_of_week='mon',
+        hour=4,
+        minute=0,
+        name="weekly_shard_data_update"
+    )
+
     logger.info("Scheduled tasks registered")
 
 # ====================== ADMIN COMMANDS ======================
@@ -503,6 +740,16 @@ def process_validation_request(message):
         bot.send_message(message.chat.id, f"⚠️ Found {count} discrepancies! Check admin notifications")
     else:
         bot.send_message(message.chat.id, "❌ Validation failed")
+
+@bot.message_handler(func=lambda msg: msg.text == '🔄 Update Shard Data' and is_admin(msg.from_user.id))
+def handle_update_shard_data(message):
+    update_last_interaction(message.from_user.id)
+    bot.send_message(message.chat.id, "🔄 Updating shard data from official source...")
+    
+    if update_shard_data_from_official():
+        bot.send_message(message.chat.id, "✅ Shard data updated successfully!")
+    else:
+        bot.send_message(message.chat.id, "❌ Failed to update shard data")
 
 # ========================== DATABASE ===========================
 def get_db():
@@ -539,6 +786,16 @@ def init_db():
                 created_at TIMESTAMP DEFAULT NOW()
             );
             """)
+
+            cur.execute("""
+            CREATE TABLE IF NOT EXISTS shard_data (
+                phase INT PRIMARY KEY,
+                realm TEXT NOT NULL,
+                area TEXT NOT NULL,
+                type TEXT NOT NULL,
+                candles REAL NOT NULL
+            );
+            """)
             
             # Add any missing columns
             try:
@@ -558,6 +815,7 @@ def init_db():
             except:
                 pass  # Already exists
             
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_shard_data_phase ON shard_data(phase)")
             conn.commit()
 
 # ======================== UTILITIES ============================
@@ -644,10 +902,88 @@ def send_admin_menu(chat_id):
     markup = telebot.types.ReplyKeyboardMarkup(resize_keyboard=True)
     markup.row('👥 User Stats', '📢 Broadcast')
     markup.row('⏰ Manage Reminders', '📊 System Status')
+    markup.row('🔄 Update Shard Data', '✅ Validate Predictions')
     markup.row('🔄 Refresh Shard Data', '✅ Validate Predictions')
     markup.row('🔍 Find User')
     markup.row('🔙 Main Menu')
     bot.send_message(chat_id, "Admin Panel:", reply_markup=markup)
+
+# ====================== SHARD DATABASE UTILITIES ======================
+def load_shard_data_from_db():
+    """Load all shard data from database into cache"""
+    global phase_map_cache
+    try:
+        with get_db() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT phase, realm, area, type, candles FROM shard_data")
+                phase_map_cache = {row[0]: {
+                    "realm": row[1],
+                    "area": row[2],
+                    "type": row[3],
+                    "candles": row[4]
+                } for row in cur.fetchall()}
+        logger.info(f"Loaded {len(phase_map_cache)} shard records from database")
+        return True
+    except Exception as e:
+        logger.error(f"Error loading shard data from DB: {str(e)}")
+        return False
+
+def save_shard_data_to_db(data):
+    """Save shard data to database (upsert)"""
+    try:
+        with get_db() as conn:
+            with conn.cursor() as cur:
+                for phase, info in data.items():
+                    cur.execute("""
+                        INSERT INTO shard_data (phase, realm, area, type, candles)
+                        VALUES (%s, %s, %s, %s, %s)
+                        ON CONFLICT (phase) DO UPDATE
+                        SET realm = EXCLUDED.realm,
+                            area = EXCLUDED.area,
+                            type = EXCLUDED.type,
+                            candles = EXCLUDED.candles
+                    """, (phase, info["realm"], info["area"], info["type"], info["candles"]))
+                conn.commit()
+        logger.info(f"Saved {len(data)} shard records to database")
+        return True
+    except Exception as e:
+        logger.error(f"Error saving shard data to DB: {str(e)}")
+        return False
+
+def update_shard_data_from_official():
+    """Fetch official data and update database"""
+    try:
+        logger.info("Fetching official shard data...")
+        response = requests.get(SHARD_API_URL, timeout=15)
+        response.raise_for_status()
+        official_data = response.json()
+        
+        # Transform to our format: {phase: {realm, area, type, candles}}
+        phase_data = {}
+        for item in official_data:
+            try:
+                # Extract phase from date
+                event_date = datetime.strptime(item["date"], "%Y-%m-%d").date()
+                phase = calculate_phase(event_date)
+                
+                # Map to our structure
+                phase_data[phase] = {
+                    "realm": item["realm"],
+                    "area": item["area"],
+                    "type": item["type"],
+                    "candles": 3.5 if item["type"] == "Red" else 2.5
+                }
+            except Exception as e:
+                logger.error(f"Error processing item: {item} - {str(e)}")
+        
+        # Save to DB
+        if save_shard_data_to_db(phase_data):
+            # Refresh cache
+            load_shard_data_from_db()
+            return True
+    except Exception as e:
+        logger.error(f"Error updating from official source: {str(e)}")
+    return False
 
 # ======================= GLOBAL HANDLERS =======================
 @bot.message_handler(func=lambda msg: msg.text == '🔙 Main Menu')
@@ -1496,6 +1832,14 @@ if __name__ == '__main__':
     logger.info("Initializing database...")
     init_db()
     logger.info("Database initialized")
+
+    # Load shard data from DB
+    logger.info("Loading shard data from database...")
+    if not load_shard_data_from_db():
+        # First-time setup: load default data
+        logger.info("Loading default shard data...")
+        save_shard_data_to_db(DEFAULT_PHASE_MAP)
+        load_shard_data_from_db()
     
     # Load shard data
     logger.info("Loading shard data...")
