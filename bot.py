@@ -368,21 +368,6 @@ def process_validation_range(message):
     
     send_admin_menu(message.chat.id)
 
-# ====================== SCHEDULED TASKS ======================
-def setup_scheduled_tasks():
-    """Setup recurring maintenance tasks"""
-    # ... existing tasks ...
-    
-    # Weekly shard data update with validation
-    scheduler.add_job(
-        update_shard_data_with_validation,
-        'cron',
-        day_of_week='mon',
-        hour=4,
-        minute=0,
-        name="weekly_validated_shard_update"
-    )
-
 # ====================== SHARD CALCULATION FUNCTIONS ======================
 def calculate_phase(target_date):
     """Calculate shard phase for a given date"""
@@ -409,26 +394,23 @@ def get_shard_info(target_date):
     # Get info from cache
     info = phase_map_cache.get(phase, {})
     
-    return {
-        "realm": info.get("realm", "Unknown"),
-        "area": info.get("area", "Unknown"),
-        "type": info.get("type", "Unknown"),
-        "candles": info.get("candles", 0),
-        "phase": phase,
-        "is_rest_day": False
-    }
-    
-    # Get info from cache
-    info = phase_map_cache.get(phase, {})
-    
-    # Calculate shard type if missing
-    if "type" not in info:
-        info["type"] = calculate_shard_type(phase)
+    # If no info found, try to calculate from pattern
+    if not info:
+        logger.warning(f"No shard data found for phase {phase}")
+        return {
+            "realm": "Unknown",
+            "area": "Unknown",
+            "type": calculate_shard_type(phase),
+            "candles": 3.5 if calculate_shard_type(phase) == "Red" else 2.5,
+            "phase": phase,
+            "is_rest_day": False
+        }
     
     return {
         "realm": info.get("realm", "Unknown"),
         "area": info.get("area", "Unknown"),
-        "type": info["type"],
+        "type": info.get("type", "Black"),
+        "candles": 3.5 if info.get("type") == "Red" else 2.5,
         "phase": phase,
         "is_rest_day": False
     }
@@ -455,6 +437,9 @@ def refresh_phase_map():
         # Extract the phase map from TypeScript file
         content = response.text
         start_idx = content.find("export const PHASE_TO_SHARD: Record<number, ShardLocation> = {")
+        if start_idx == -1:
+            # Try alternative pattern if first not found
+            start_idx = content.find("export const PHASE_TO_SHARD = {")
         end_idx = content.find("};", start_idx)
         
         if start_idx == -1 or end_idx == -1:
@@ -465,20 +450,25 @@ def refresh_phase_map():
         # Convert to JSON-friendly format
         json_map = {}
         for line in ts_map.splitlines():
+            line = line.strip()
             if ":" in line:
+                # Extract phase number
                 phase_str = line.split(":")[0].strip()
-                if phase_str.isdigit():
+                # Remove any non-digit characters
+                phase_str = ''.join(filter(str.isdigit, phase_str))
+                
+                if phase_str:
                     phase = int(phase_str)
-                    # Extract realm and area
-                    realm_match = re.search(r"realm:\s+Realm\.(\w+)", line)
-                    area_match = re.search(r"area:\s+Area\.(\w+)", line)
-                    type_match = re.search(r"type:\s+ShardType\.(\w+)", line)
+                    # Extract realm, area and type
+                    realm_match = re.search(r"realm:\s*Realm\.(\w+)", line)
+                    area_match = re.search(r"area:\s*Area\.(\w+)", line)
+                    type_match = re.search(r"type:\s*ShardType\.(\w+)", line)
                     
                     if realm_match and area_match:
                         json_map[phase] = {
                             "realm": realm_match.group(1),
                             "area": area_match.group(1),
-                            "type": type_match.group(1) if type_match else "Unknown"
+                            "type": type_match.group(1) if type_match else "Black"
                         }
         
         if json_map:
@@ -497,6 +487,7 @@ def refresh_phase_map():
             return True
     except Exception as e:
         logger.error(f"Error refreshing phase map: {str(e)}")
+        logger.error(traceback.format_exc())
     
     return False
 
@@ -593,6 +584,7 @@ def send_shard_info(chat_id, user_id, target_date=None):
             f"<b>Realm:</b> {shard_info['realm']}\n"
             f"<b>Area:</b> {shard_info['area']}\n"
             f"<b>Type:</b> {type_emoji} {shard_info['type']}\n"
+            f"<b>Candles:</b> {shard_info['candles']}\n"
         )
     
     # Add eruption schedule
@@ -740,16 +732,6 @@ def process_validation_request(message):
         bot.send_message(message.chat.id, f"⚠️ Found {count} discrepancies! Check admin notifications")
     else:
         bot.send_message(message.chat.id, "❌ Validation failed")
-
-@bot.message_handler(func=lambda msg: msg.text == '🔄 Update Shard Data' and is_admin(msg.from_user.id))
-def handle_update_shard_data(message):
-    update_last_interaction(message.from_user.id)
-    bot.send_message(message.chat.id, "🔄 Updating shard data from official source...")
-    
-    if update_shard_data_from_official():
-        bot.send_message(message.chat.id, "✅ Shard data updated successfully!")
-    else:
-        bot.send_message(message.chat.id, "❌ Failed to update shard data")
 
 # ========================== DATABASE ===========================
 def get_db():
@@ -903,7 +885,7 @@ def send_admin_menu(chat_id):
     markup.row('👥 User Stats', '📢 Broadcast')
     markup.row('⏰ Manage Reminders', '📊 System Status')
     markup.row('🔄 Update Shard Data', '✅ Validate Predictions')
-    markup.row('🔄 Refresh Shard Data', '✅ Validate Predictions')
+    markup.row('🔄 Refresh Shard Data', '✅ Validate Shard Data')
     markup.row('🔍 Find User')
     markup.row('🔙 Main Menu')
     bot.send_message(chat_id, "Admin Panel:", reply_markup=markup)
@@ -1265,8 +1247,6 @@ def ask_reminder_minutes(message, event_type, selected_time):
         logger.error(f"Error in minutes selection: {str(e)}")
         bot.send_message(message.chat.id, "⚠️ Failed to set reminder. Please try again.")
         send_wax_menu(message.chat.id)
-
-import re
 
 def save_reminder(message, event_type, selected_time, is_daily):
     update_last_interaction(message.from_user.id)
