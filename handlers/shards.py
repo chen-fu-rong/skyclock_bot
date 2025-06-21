@@ -5,8 +5,16 @@ from services import shard_service
 from services.database import get_db
 from utils.formatters import format_time
 import logging
+from datetime import date, datetime, timedelta
 
 logger = logging.getLogger(__name__)
+
+def notify_admin(message, admin_user_id):
+    """Send important notifications to admin"""
+    try:
+        bot.send_message(admin_user_id, message)
+    except Exception as e:
+        logger.error(f"Failed to notify admin: {str(e)}")
 
 def send_shard_info(bot, chat_id, user_id, target_date=None):
     user = get_db().get_user(user_id)
@@ -99,7 +107,7 @@ def register_shard_handlers(bot, admin_user_id):
             target_date = date.fromisoformat(date_str)
             send_shard_info(bot, call.message.chat.id, call.from_user.id, target_date)
             
-            # Edit original message instead of sending new one
+            # Edit original message
             try:
                 bot.edit_message_reply_markup(
                     call.message.chat.id,
@@ -107,7 +115,7 @@ def register_shard_handlers(bot, admin_user_id):
                     reply_markup=None
                 )
             except:
-                pass  # Fail silently if message can't be edited
+                pass
         except Exception as e:
             logger.error(f"Error handling shard callback: {str(e)}")
             bot.answer_callback_query(call.id, "❌ Failed to load shard data")
@@ -132,10 +140,11 @@ def register_shard_handlers(bot, admin_user_id):
             message.chat.id,
             "Enter validation date range (format: YYYY-MM-DD to YYYY-MM-DD) or press /cancel:"
         )
-        bot.register_next_step_handler(msg, process_validation_range, message.chat.id)
+        bot.register_next_step_handler(msg, process_validation_range, message.chat.id, admin_user_id)
     
-    def process_validation_range(message, chat_id):
+    def process_validation_range(message, chat_id, admin_user_id):
         if message.text.strip().lower() == '/cancel':
+            from handlers.admin import send_admin_menu
             send_admin_menu(bot, chat_id)
             return
             
@@ -173,7 +182,7 @@ def register_shard_handlers(bot, admin_user_id):
                 )
                 
                 # Send full report to admin
-                shard_service.notify_admin(report, admin_user_id)
+                notify_admin(report, admin_user_id)
                 
         except Exception as e:
             bot.send_message(
@@ -181,4 +190,5 @@ def register_shard_handlers(bot, admin_user_id):
                 f"❌ Validation failed: {str(e)}. Use format: YYYY-MM-DD to YYYY-MM-DD"
             )
         
+        from handlers.admin import send_admin_menu
         send_admin_menu(bot, chat_id)

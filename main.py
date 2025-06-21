@@ -5,7 +5,7 @@ from bot import app, bot
 from services.database import init_db
 from services.scheduler import scheduler, setup_scheduled_tasks
 from handlers import register_handlers
-from services.shard_service import load_shard_data_from_db, DEFAULT_PHASE_MAP, save_shard_data_to_db, refresh_phase_map
+from services.shard_service import initialize_shard_cache
 
 # Configure logging
 logging.basicConfig(
@@ -23,15 +23,9 @@ if __name__ == '__main__':
     init_db()
     logger.info("Database initialized")
 
-    # Load shard data
-    logger.info("Loading shard data from database...")
-    if not load_shard_data_from_db():
-        logger.info("Loading default shard data...")
-        save_shard_data_to_db(DEFAULT_PHASE_MAP)
-        load_shard_data_from_db()
-    
-    logger.info("Refreshing phase map...")
-    refresh_phase_map()
+    # Initialize shard cache
+    logger.info("Initializing shard cache...")
+    initialize_shard_cache()
     
     logger.info("Setting up scheduled tasks...")
     setup_scheduled_tasks()

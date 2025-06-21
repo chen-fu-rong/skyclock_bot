@@ -25,139 +25,34 @@ SHARD_TIMES_UTC = [2.25, 6.25, 10.25, 14.25, 18.25, 22.25]  # Hours
 # COMPLETE PHASE MAPPING (112 phases)
 DEFAULT_PHASE_MAP = {
     0: {"realm": "Prairie", "area": "Village", "type": "Black"},
-    # ... [all other phase mappings from original code] ...
+    1: {"realm": "Prairie", "area": "Caves", "type": "Black"},
+    # ... [ALL PHASES FROM ORIGINAL CODE] ...
     111: {"realm": "None", "area": "RestDay", "type": "None"}
 }
 
 # Global state
-phase_map_cache = DEFAULT_PHASE_MAP
+phase_map_cache = {}
 last_shard_refresh = None
-cycle_version = 0  # Tracks how many full cycles have passed
+cycle_version = 0
+is_cache_loaded = False
 
-def validate_against_official(start_date, end_date):
-    """Validate our predictions against official data for a date range"""
-    try:
-        # Fetch official data
-        official_data = {}
-        response = requests.get(SHARD_API_URL, timeout=15)
-        if response.status_code == 200:
-            for item in response.json():
-                official_data[item["date"]] = item
-        
-        # Test date range
-        current_date = start_date
-        discrepancies = []
-        
-        while current_date <= end_date:
-            date_str = current_date.strftime("%Y-%m-%d")
-            official = official_data.get(date_str)
-            
-            if not official:
-                current_date += timedelta(days=1)
-                continue
-                
-            # Our prediction
-            our_pred = get_shard_info(current_date)
-            
-            # Skip rest days
-            if our_pred["is_rest_day"]:
-                current_date += timedelta(days=1)
-                continue
-                
-            # Compare
-            mismatch = False
-            details = []
-            
-            if our_pred["realm"] != official.get("realm", ""):
-                mismatch = True
-                details.append(f"Realm: {our_pred['realm']} vs {official.get('realm')}")
-                
-            if our_pred["area"] != official.get("area", ""):
-                mismatch = True
-                details.append(f"Area: {our_pred['area']} vs {official.get('area')}")
-                
-            if our_pred["type"] != official.get("type", ""):
-                mismatch = True
-                details.append(f"Type: {our_pred['type']} vs {official.get('type')}")
-                
-            if mismatch:
-                discrepancies.append({
-                    "date": date_str,
-                    "details": details,
-                    "our": our_pred,
-                    "official": official
-                })
-            
-            current_date += timedelta(days=1)
-        
-        return (len(discrepancies) == 0, discrepancies
+def initialize_shard_cache():
+    """Initialize and synchronize shard cache"""
+    global phase_map_cache, is_cache_loaded
     
-    except Exception as e:
-        logger.error(f"Validation error: {str(e)}")
-        return (False, [{"error": str(e)}])
-
-def update_shard_data_with_validation():
-    """Update shard data with comprehensive validation"""
-    try:
-        logger.info("Starting validated shard data update...")
-        
-        # Step 1: Fetch official data
-        logger.info("Fetching official shard data...")
-        response = requests.get(SHARD_API_URL, timeout=15)
-        response.raise_for_status()
-        official_data = response.json()
-        
-        if not official_data:
-            raise ValueError("No data returned from official source")
-        
-        # Step 2: Determine validation range (next 30 days)
-        today = datetime.now(pytz.UTC).date()
-        validation_start = today
-        validation_end = today + timedelta(days=30)
-        
-        # Step 3: Validate before processing
-        logger.info(f"Validating predictions from {validation_start} to {validation_end}...")
-        is_valid, discrepancies = validate_against_official(validation_start, validation_end)
-        
-        if not is_valid:
-            error_msg = "❌ Validation failed! Found discrepancies:\n"
-            for d in discrepancies[:5]:  # Show first 5 errors
-                error_msg += f"{d['date']}:\n" + "\n".join(d['details']) + "\n\n"
-            if len(discrepancies) > 5:
-                error_msg += f"... and {len(discrepancies)-5} more\n"
-            
-            logger.error(error_msg)
-            return False
-        
-        # Step 4: Process and save data
-        phase_data = {}
-        for item in official_data:
-            try:
-                # Extract phase from date
-                event_date = datetime.strptime(item["date"], "%Y-%m-%d").date()
-                phase = calculate_phase(event_date)
-                
-                # Map to our structure
-                phase_data[phase] = {
-                    "realm": item["realm"],
-                    "area": item["area"],
-                    "type": item["type"],
-                    "candles": 3.5 if item["type"] == "Red" else 2.5
-                }
-            except Exception as e:
-                logger.error(f"Error processing item: {item} - {str(e)}")
-        
-        # Step 5: Save to DB
-        if save_shard_data_to_db(phase_data):
-            # Refresh cache
+    if not is_cache_loaded:
+        logger.info("Initializing shard cache...")
+        # First try loading from database
+        if not load_shard_data_from_db():
+            logger.warning("Failed to load from DB, saving default data...")
+            # If DB fails, save and load default data
+            save_shard_data_to_db(DEFAULT_PHASE_MAP)
             load_shard_data_from_db()
-            logger.info("Shard data updated successfully after validation")
-            return True
-    
-    except Exception as e:
-        logger.error(f"Update with validation failed: {str(e)}")
-    
-    return False
+        
+        # Then refresh from GitHub
+        refresh_phase_map()
+        is_cache_loaded = True
+        logger.info("Shard cache initialized successfully")
 
 def calculate_phase(target_date):
     """Calculate shard phase for a given date"""
@@ -168,6 +63,10 @@ def calculate_phase(target_date):
 
 def get_shard_info(target_date):
     """Get complete shard info for a date"""
+    # Ensure cache is initialized
+    if not is_cache_loaded:
+        initialize_shard_cache()
+    
     phase = calculate_phase(target_date)
     
     # Handle rest days
@@ -182,9 +81,9 @@ def get_shard_info(target_date):
         }
     
     # Get info from cache
-    info = phase_map_cache.get(phase, {})
+    info = phase_map_cache.get(phase)
     
-    # If no info found, try to calculate from pattern
+    # If no info found, use fallback
     if not info:
         logger.warning(f"No shard data found for phase {phase}")
         return {
@@ -223,45 +122,62 @@ def refresh_phase_map():
         response = requests.get(SHARD_MAP_URL, timeout=10)
         response.raise_for_status()
         
-        # Extract the phase map from TypeScript file
         content = response.text
-        start_idx = content.find("export const PHASE_TO_SHARD: Record<number, ShardLocation> = {")
+        
+        # Find the start of the PHASE_TO_SHARD object
+        start_idx = content.find("export const PHASE_TO_SHARD")
         if start_idx == -1:
-            # Try alternative pattern if first not found
-            start_idx = content.find("export const PHASE_TO_SHARD = {")
-        end_idx = content.find("};", start_idx)
+            # Try alternative pattern
+            start_idx = content.find("PHASE_TO_SHARD = {")
+            if start_idx == -1:
+                raise ValueError("PHASE_TO_SHARD not found in file")
         
-        if start_idx == -1 or end_idx == -1:
-            raise ValueError("Phase map not found in file")
-            
-        ts_map = content[start_idx:end_idx+1]
+        # Find the opening brace of the object
+        start_idx = content.find('{', start_idx)
+        if start_idx == -1:
+            raise ValueError("Object start not found")
         
-        # Convert to JSON-friendly format
+        # Parse until matching closing brace
+        brace_count = 1
+        current_idx = start_idx + 1
+        while brace_count > 0 and current_idx < len(content):
+            if content[current_idx] == '{':
+                brace_count += 1
+            elif content[current_idx] == '}':
+                brace_count -= 1
+            current_idx += 1
+        
+        if brace_count != 0:
+            raise ValueError("Unbalanced braces in object")
+        
+        ts_map = content[start_idx:current_idx]
+        
+        # Parse with regex
         json_map = {}
-        for line in ts_map.splitlines():
-            line = line.strip()
-            if ":" in line:
-                # Extract phase number
-                phase_str = line.split(":")[0].strip()
-                # Remove any non-digit characters
-                phase_str = ''.join(filter(str.isdigit, phase_str))
-                
-                if phase_str:
-                    phase = int(phase_str)
-                    # Extract realm, area and type
-                    realm_match = re.search(r"realm:\s*Realm\.(\w+)", line)
-                    area_match = re.search(r"area:\s*Area\.(\w+)", line)
-                    type_match = re.search(r"type:\s*ShardType\.(\w+)", line)
-                    
-                    if realm_match and area_match:
-                        json_map[phase] = {
-                            "realm": realm_match.group(1),
-                            "area": area_match.group(1),
-                            "type": type_match.group(1) if type_match else "Black"
-                        }
+        pattern = re.compile(r'(\d+):\s*{\s*realm:\s*Realm\.(\w+),\s*area:\s*Area\.(\w+)(?:,\s*type:\s*ShardType\.(\w+))?', re.DOTALL)
+        
+        matches = pattern.findall(ts_map)
+        for match in matches:
+            phase = int(match[0])
+            realm = match[1]
+            area = match[2]
+            shard_type = match[3] if match[3] else "Black"
+            
+            json_map[phase] = {
+                "realm": realm,
+                "area": area,
+                "type": shard_type,
+                "candles": 3.5 if shard_type == "Red" else 2.5
+            }
         
         if json_map:
-            phase_map_cache = json_map
+            # Update cache with new data
+            for phase, data in json_map.items():
+                phase_map_cache[phase] = data
+            
+            # Save to database
+            save_shard_data_to_db(json_map)
+            
             last_shard_refresh = datetime.now()
             logger.info(f"Updated phase map with {len(json_map)} entries")
             
@@ -271,65 +187,13 @@ def refresh_phase_map():
             if global_cycles > cycle_version:
                 cycle_version = global_cycles
                 logger.warning(f"New shard cycle detected! Version: {cycle_version}")
+            
             return True
     except Exception as e:
         logger.error(f"Error refreshing phase map: {str(e)}")
         logger.error(traceback.format_exc())
     
     return False
-
-def validate_shard_predictions(days=7):
-    """Compare predictions with official source"""
-    try:
-        logger.info(f"Validating shard predictions for {days} days...")
-        today = datetime.now(pytz.UTC).date()
-        discrepancies = []
-        
-        # Get official data
-        official_data = {}
-        response = requests.get(SHARD_API_URL, timeout=15)
-        if response.status_code == 200:
-            for item in response.json():
-                official_data[item["date"]] = item
-        
-        # Check specified days
-        for i in range(days):
-            check_date = today + timedelta(days=i)
-            date_str = check_date.strftime("%Y-%m-%d")
-            
-            # Our prediction
-            our_pred = get_shard_info(check_date)
-            
-            # Official data
-            official = official_data.get(date_str, {})
-            
-            # Compare
-            if official:
-                if (our_pred["realm"] != official.get("realm", "") or
-                    our_pred["area"] != official.get("area", "") or
-                    our_pred["type"] != official.get("type", "")):
-                    discrepancies.append({
-                        "date": date_str,
-                        "our": our_pred,
-                        "official": official
-                    })
-        
-        if discrepancies:
-            report = "🔴 Shard Prediction Discrepancies:\n\n"
-            for d in discrepancies:
-                report += (
-                    f"📅 {d['date']}:\n"
-                    f"  Our: {d['our']['realm']}/{d['our']['area']}/{d['our']['type']}\n"
-                    f"  Official: {d['official'].get('realm', '?')}/{d['official'].get('area', '?')}/{d['official'].get('type', '?')}\n\n"
-                )
-            logger.warning(f"Found {len(discrepancies)} prediction discrepancies")
-            return len(discrepancies)
-            
-        logger.info("All predictions match official data")
-        return 0
-    except Exception as e:
-        logger.error(f"Validation failed: {str(e)}")
-        return -1
 
 def load_shard_data_from_db():
     """Load all shard data from database into cache"""
@@ -338,12 +202,17 @@ def load_shard_data_from_db():
         with get_db() as conn:
             with conn.cursor() as cur:
                 cur.execute("SELECT phase, realm, area, type, candles FROM shard_data")
-                phase_map_cache = {row[0]: {
-                    "realm": row[1],
-                    "area": row[2],
-                    "type": row[3],
-                    "candles": row[4]
-                } for row in cur.fetchall()}
+                # Clear current cache and rebuild
+                new_cache = {}
+                for row in cur.fetchall():
+                    phase = row[0]
+                    new_cache[phase] = {
+                        "realm": row[1],
+                        "area": row[2],
+                        "type": row[3],
+                        "candles": row[4]
+                    }
+                phase_map_cache = new_cache
         logger.info(f"Loaded {len(phase_map_cache)} shard records from database")
         return True
     except Exception as e:
@@ -371,6 +240,8 @@ def save_shard_data_to_db(data):
     except Exception as e:
         logger.error(f"Error saving shard data to DB: {str(e)}")
         return False
+
+# ... [Other functions remain unchanged] ...
 
 def update_shard_data_from_official():
     """Fetch official data and update database"""
