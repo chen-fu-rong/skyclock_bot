@@ -979,40 +979,51 @@ def user_stats(message):
         bot.send_message(message.chat.id, error_msg)
 
 # ===================== ADMIN TS EDITOR FLOW (Database Version) =====================
-@bot.message_handler(func=lambda msg: msg.text == '✨ Edit Traveling Spirit' and is_admin(msg.from_user.id))
-def handle_ts_edit_start(message):
-    markup = telebot.types.ReplyKeyboardMarkup(resize_keyboard=True)
-    markup.row('✅ Spirit is Active')
-    markup.row('❌ Spirit is Inactive')
-    markup.row('🔙 Admin Panel')
-    bot.send_message(message.chat.id, "Set the Traveling Spirit's status:", reply_markup=markup)
-    bot.register_next_step_handler(message, process_ts_status)
+def process_ts_status(message):
+    if message.text == '🔙 Admin Panel': 
+        return send_admin_menu(message.chat.id)
+
+    if message.text == '✅ Spirit is Active':
+        msg = bot.send_message(message.chat.id, "Please send the spirit's name (e.g., Marching Adventurer):", reply_markup=telebot.types.ReplyKeyboardRemove())
+        bot.register_next_step_handler(msg, process_ts_name)
+    elif message.text == '❌ Spirit is Inactive':
+        try:
+            with get_db() as conn:
+                with conn.cursor() as cur:
+                    cur.execute("UPDATE traveling_spirit SET is_active = FALSE, last_updated = NOW() WHERE id = 1")
+                    conn.commit()
+            bot.send_message(message.chat.id, "✅ Traveling Spirit status has been set to INACTIVE.")
+        except Exception as e:
+            logger.error(f"Failed to set TS inactive: {e}")
+            bot.send_message(message.chat.id, "⚠️ Error updating status in the database.")
+        send_admin_menu(message.chat.id)
+    else:
+        bot.send_message(message.chat.id, "Invalid option. Please try again.")
+        # We call the *starting* function here, which is now defined below and will be found correctly.
+        handle_ts_edit_start(message)
 
 def process_ts_name(message):
     ts_info = {'name': message.text.strip()}
-    msg = bot.send_message(message.chat.id, f"Name set to: **{ts_info['name']}**\n\nNow, send the dates (e.g., July 3 to July 6):", parse_mode='Markdown')
+    msg = bot.send_message(message.chat.id, f"Name set. Now, send the dates:")
     bot.register_next_step_handler(msg, process_ts_dates, ts_info)
 
 def process_ts_dates(message, ts_info):
     ts_info['dates'] = message.text.strip()
-    msg = bot.send_message(message.chat.id, f"Dates set to: **{ts_info['dates']}**\n\nNow, please send the **main photo** for the spirit:", parse_mode='Markdown')
+    msg = bot.send_message(message.chat.id, f"Dates set. Now, please send the main photo for the spirit:")
     bot.register_next_step_handler(msg, process_ts_main_image, ts_info)
 
 def process_ts_main_image(message, ts_info):
-    # Check if the message contains a photo
     if message.photo:
-        # Get the file_id of the largest version of the photo
         ts_info['image_file_id'] = message.photo[-1].file_id
-        msg = bot.send_message(message.chat.id, f"Main photo received.\n\nNow, send the item list (each item on a new line):\n`Item Name: Price`", parse_mode='Markdown')
+        msg = bot.send_message(message.chat.id, f"Main photo received.\n\nNow, send the item list (each item on a new line):")
         bot.register_next_step_handler(msg, process_ts_items_list, ts_info)
     else:
-        # If the user sent text instead of a photo
         msg = bot.send_message(message.chat.id, "That's not a photo. Please send an image.")
         bot.register_next_step_handler(msg, process_ts_main_image, ts_info)
 
 def process_ts_items_list(message, ts_info):
     ts_info['items'] = message.text.strip()
-    msg = bot.send_message(message.chat.id, "Item list set.\n\nNext, please send the **item tree picture**:")
+    msg = bot.send_message(message.chat.id, "Item list set.\n\nNext, please send the item tree picture:")
     bot.register_next_step_handler(msg, process_ts_tree_image, ts_info)
 
 def process_ts_tree_image(message, ts_info):
@@ -1026,6 +1037,34 @@ def process_ts_tree_image(message, ts_info):
 
 def process_ts_tree_caption(message, ts_info):
     ts_info['tree_caption'] = message.text.strip()
+    try:
+        with get_db() as conn:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    UPDATE traveling_spirit 
+                    SET is_active = TRUE, name = %s, dates = %s, image_url = %s, items = %s, 
+                        item_tree_image_url = %s, item_tree_caption = %s, last_updated = NOW()
+                    WHERE id = 1
+                """, (ts_info['name'], ts_info['dates'], ts_info['image_file_id'], ts_info['items'], 
+                      ts_info['tree_image_file_id'], ts_info['tree_caption']))
+                conn.commit()
+        bot.send_message(message.chat.id, "✅ **Success!** All Traveling Spirit information has been updated.")
+    except Exception as e:
+        logger.error(f"Failed to save TS info to DB: {e}")
+        bot.send_message(message.chat.id, "⚠️ **Database Error!**")
+    send_admin_menu(message.chat.id)
+
+
+# Now, define the handler that STARTS the conversation LAST.
+@bot.message_handler(func=lambda msg: msg.text == '✨ Edit Traveling Spirit' and is_admin(msg.from_user.id))
+def handle_ts_edit_start(message):
+    markup = telebot.types.ReplyKeyboardMarkup(resize_keyboard=True)
+    markup.row('✅ Spirit is Active')
+    markup.row('❌ Spirit is Inactive')
+    markup.row('🔙 Admin Panel')
+    bot.send_message(message.chat.id, "Set the Traveling Spirit's status:", reply_markup=markup)
+    # This call now works because process_ts_status is defined above.
+    bot.register_next_step_handler(message, process_ts_status)
     
     # Save everything to the database
     try:
