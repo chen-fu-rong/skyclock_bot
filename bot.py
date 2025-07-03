@@ -35,7 +35,7 @@ WEBHOOK_URL = os.getenv("WEBHOOK_URL") or "https://skyclock-bot.onrender.com/web
 DB_URL = os.getenv("DATABASE_URL") or "postgresql://user:pass@host:port/db"
 ADMIN_USER_ID = os.getenv("ADMIN_USER_ID") or "YOUR_ADMIN_USER_ID"
 
-bot = telebot.TeleBot(API_TOKEN)
+bot = telebot.TeleBot(API_TOKEN, threaded=False)
 app = Flask(__name__)
 scheduler = BackgroundScheduler()
 scheduler.start()
@@ -1350,7 +1350,7 @@ def catch_all_handler(message):
     logger.info(f"--- Message Text: '{message.text}' ---")
     # This reply confirms to you in Telegram that the bot is alive.
     bot.reply_to(message, "DEBUG: Bot is alive and received your message.")
-    
+
 # ===================== BOT INITIALIZATION ======================
 # This code runs once when Gunicorn starts the bot.
 
