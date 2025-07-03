@@ -13,6 +13,9 @@ import telebot
 from apscheduler.schedulers.background import BackgroundScheduler
 from datetime import datetime, timedelta
 from psycopg2 import errors as psycopg2_errors
+from PIL import Image
+import io
+
 
 
 # Configure logging
@@ -274,7 +277,7 @@ def show_traveling_spirit(message):
         "is_active": True,
         "name": "Marching Adventurer",
         "dates": "July 3rd to July 6th, 2025",
-        "image_url": "https://sky-children-of-the-light.fandom.com/wiki/Traveling_Spirits?file=Traveling_Spirit_at_Home.png",
+        "image_url": "https://static.wikia.nocookie.net/sky-children-of-the-light/images/c/c2/Marching_Adventurer.png",
         "items": [
             {"name": "Marching Adventurer's Hat", "price": "44 Candles"},
             {"name": "Marching Adventurer's Cape", "price": "70 Candles"},
@@ -285,9 +288,6 @@ def show_traveling_spirit(message):
     next_arrival_date = "Thursday, July 17th, 2025"
 
     if ts_data.get("is_active"):
-        # --- THIS IS THE MODIFIED PART ---
-        
-        # 1. Build the text for the caption first
         caption_text = (
             f"**A Traveling Spirit is here!** ✨\n\n"
             f"The **{ts_data['name']}** has arrived!\n\n"
@@ -300,29 +300,36 @@ def show_traveling_spirit(message):
         
         photo_url = ts_data.get("image_url")
 
-        # 2. Try to download the image and send it as a photo
         try:
             if not photo_url:
                 raise ValueError("Image URL is missing")
 
-            # Download the image content
+            # 1. Download the image
             image_response = requests.get(photo_url, timeout=10)
-            image_response.raise_for_status()  # Raise an exception for bad status codes (like 404)
+            image_response.raise_for_status()
             
-            # Send the downloaded image data directly
+            # 2. Process the image with Pillow to ensure it's clean
+            image_data = io.BytesIO(image_response.content)
+            img = Image.open(image_data)
+            
+            # 3. Save the cleaned image back to an in-memory file
+            clean_image_bio = io.BytesIO()
+            img.save(clean_image_bio, 'PNG')
+            clean_image_bio.seek(0) # IMPORTANT: Rewind the file to the beginning
+
+            # 4. Send the clean, processed image data
             bot.send_photo(
                 chat_id=message.chat.id, 
-                photo=image_response.content, # Send the actual image data
+                photo=clean_image_bio, # Send the processed image
                 caption=caption_text, 
                 parse_mode='Markdown'
             )
         except Exception as e:
-            # 3. If sending the photo fails, send the text message as a fallback
-            logger.error(f"Could not send TS photo. Error: {e}")
+            # If anything fails, send the text message as a fallback
+            logger.error(f"Could not process and send TS photo. Error: {e}")
             bot.send_message(message.chat.id, caption_text, parse_mode='Markdown')
 
     else:
-        # This part for inactive spirits remains the same
         response = (
             f"The Traveling Spirit has departed for now.\n\n"
             f"The next spirit is scheduled to arrive on **{next_arrival_date}**."
