@@ -1358,12 +1358,13 @@ if __name__ == '__main__':
                 """)
                 reminders = cur.fetchall()
                 for rem in reminders:
-                    # --- THIS IS THE FIX ---
-                    # The time from the DB is naive, so we make it aware of the UTC timezone.
                     event_time_from_db = rem[3]
-                    aware_event_time_utc = pytz.utc.localize(event_time_from_db)
+                    # Make the datetime aware of the UTC timezone
+                    if event_time_from_db.tzinfo is None:
+                         aware_event_time_utc = pytz.utc.localize(event_time_from_db)
+                    else:
+                         aware_event_time_utc = event_time_from_db
                     
-                    # Pass the corrected, aware datetime to the scheduler function
                     schedule_reminder(rem[1], rem[0], rem[2], aware_event_time_utc, rem[4], rem[5])
 
                 logger.info(f"Scheduled {len(reminders)} existing reminders")
@@ -1375,7 +1376,3 @@ if __name__ == '__main__':
     bot.set_webhook(url=WEBHOOK_URL)
     logger.info(f"Webhook set to: {WEBHOOK_URL}")
     
-    logger.info("Starting Flask app...")
-    # Note: Using Gunicorn is recommended for production instead of app.run()
-    # For Render, the start command is usually 'gunicorn bot:app'
-    # app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 10000)))
