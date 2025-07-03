@@ -112,15 +112,7 @@ def init_db():
             conn.commit()
 
 # ======================== WEB SCRAPING UTILITY ============================
-# In bot.py, replace the old scrape_traveling_spirit function with this one.
 
-# In bot.py, replace the old scrape_traveling_spirit function with this one.
-
-# In bot.py, replace the existing scraper with this diagnostic version.
-
-# In bot.py, replace the scraper function with this final version.
-
-# In bot.py, replace the scraper function with this FINAL diagnostic version.
 
 def scrape_traveling_spirit():
     """
@@ -293,41 +285,43 @@ def show_traveling_spirit(message):
     try:
         with get_db() as conn:
             with conn.cursor() as cur:
-                # Fetch the data from the database
-                cur.execute("SELECT is_active, name, dates, image_url, items FROM traveling_spirit WHERE id = 1")
+                cur.execute("""
+                    SELECT is_active, name, dates, image_url, items, 
+                           item_tree_image_url, item_tree_caption 
+                    FROM traveling_spirit WHERE id = 1
+                """)
                 ts_data_row = cur.fetchone()
 
         if not ts_data_row:
             raise ValueError("Traveling spirit data not found in database.")
 
-        is_active, name, dates, image_url, items_text = ts_data_row
+        is_active, name, dates, image_file_id, items_text, tree_image_file_id, tree_caption = ts_data_row
 
         if is_active:
-            caption_text = (
+            # --- Send the FIRST photo (Main Spirit) ---
+            main_caption = (
                 f"**A Traveling Spirit is here!** ✨\n\n"
                 f"The **{name}** has arrived!\n\n"
                 f"**Dates:** {dates}\n"
                 f"**Location:** You can find them in the Home space!\n\n"
-                f"**Items Available:**\n"
+                f"**Items Available:**\n{items_text or ''}"
             )
-            if items_text:
-                caption_text += items_text
-
+            # This is now much simpler. We send the file_id directly.
             try:
-                if not image_url: raise ValueError("Image URL is missing")
-                image_response = requests.get(image_url, timeout=10)
-                image_response.raise_for_status()
-                
-                image_data = io.BytesIO(image_response.content)
-                img = Image.open(image_data)
-                clean_image_bio = io.BytesIO()
-                img.save(clean_image_bio, 'PNG')
-                clean_image_bio.seek(0)
-                
-                bot.send_photo(message.chat.id, clean_image_bio, caption=caption_text, parse_mode='Markdown')
+                if image_file_id:
+                    bot.send_photo(message.chat.id, image_file_id, caption=main_caption, parse_mode='Markdown')
+                else: # Fallback if no image is set
+                    bot.send_message(message.chat.id, main_caption, parse_mode='Markdown')
             except Exception as e:
-                logger.error(f"Could not send TS photo. Error: {e}")
-                bot.send_message(message.chat.id, caption_text, parse_mode='Markdown')
+                logger.error(f"Could not send main TS photo by file_id. Error: {e}")
+                bot.send_message(message.chat.id, main_caption, parse_mode='Markdown')
+
+            # --- Send the SECOND photo (Item Tree) ---
+            try:
+                if tree_image_file_id:
+                    bot.send_photo(message.chat.id, tree_image_file_id, caption=tree_caption, parse_mode='Markdown')
+            except Exception as e:
+                logger.error(f"Could not send item tree photo by file_id. Error: {e}")
         else:
             bot.send_message(message.chat.id, "The Traveling Spirit has departed for now, or has not been announced yet.")
 
@@ -994,27 +988,6 @@ def handle_ts_edit_start(message):
     bot.send_message(message.chat.id, "Set the Traveling Spirit's status:", reply_markup=markup)
     bot.register_next_step_handler(message, process_ts_status)
 
-def process_ts_status(message):
-    if message.text == '🔙 Admin Panel': return send_admin_menu(message.chat.id)
-
-    if message.text == '✅ Spirit is Active':
-        msg = bot.send_message(message.chat.id, "Please send the spirit's name (e.g., Marching Adventurer):", reply_markup=telebot.types.ReplyKeyboardRemove())
-        bot.register_next_step_handler(msg, process_ts_name)
-    elif message.text == '❌ Spirit is Inactive':
-        try:
-            with get_db() as conn:
-                with conn.cursor() as cur:
-                    cur.execute("UPDATE traveling_spirit SET is_active = FALSE, last_updated = NOW() WHERE id = 1")
-                    conn.commit()
-            bot.send_message(message.chat.id, "✅ Traveling Spirit status has been set to INACTIVE.")
-        except Exception as e:
-            logger.error(f"Failed to set TS inactive: {e}")
-            bot.send_message(message.chat.id, "⚠️ Error updating status in the database.")
-        send_admin_menu(message.chat.id)
-    else:
-        bot.send_message(message.chat.id, "Invalid option. Please try again.")
-        handle_ts_edit_start(message)
-
 def process_ts_name(message):
     ts_info = {'name': message.text.strip()}
     msg = bot.send_message(message.chat.id, f"Name set to: **{ts_info['name']}**\n\nNow, send the dates (e.g., July 3 to July 6):", parse_mode='Markdown')
@@ -1022,27 +995,52 @@ def process_ts_name(message):
 
 def process_ts_dates(message, ts_info):
     ts_info['dates'] = message.text.strip()
-    msg = bot.send_message(message.chat.id, f"Dates set to: **{ts_info['dates']}**\n\nNow, send the direct URL for the spirit's image:", parse_mode='Markdown')
-    bot.register_next_step_handler(msg, process_ts_image, ts_info)
+    msg = bot.send_message(message.chat.id, f"Dates set to: **{ts_info['dates']}**\n\nNow, please send the **main photo** for the spirit:", parse_mode='Markdown')
+    bot.register_next_step_handler(msg, process_ts_main_image, ts_info)
 
-def process_ts_image(message, ts_info):
-    ts_info['image_url'] = message.text.strip()
-    msg = bot.send_message(message.chat.id, f"Image URL set.\n\nFinally, send the item list. Each item on a **new line**, like this:\n`Marching Adventurer's Hat: 44 Candles`", parse_mode='Markdown')
-    bot.register_next_step_handler(msg, process_ts_items, ts_info)
+def process_ts_main_image(message, ts_info):
+    # Check if the message contains a photo
+    if message.photo:
+        # Get the file_id of the largest version of the photo
+        ts_info['image_file_id'] = message.photo[-1].file_id
+        msg = bot.send_message(message.chat.id, f"Main photo received.\n\nNow, send the item list (each item on a new line):\n`Item Name: Price`", parse_mode='Markdown')
+        bot.register_next_step_handler(msg, process_ts_items_list, ts_info)
+    else:
+        # If the user sent text instead of a photo
+        msg = bot.send_message(message.chat.id, "That's not a photo. Please send an image.")
+        bot.register_next_step_handler(msg, process_ts_main_image, ts_info)
 
-def process_ts_items(message, ts_info):
+def process_ts_items_list(message, ts_info):
     ts_info['items'] = message.text.strip()
+    msg = bot.send_message(message.chat.id, "Item list set.\n\nNext, please send the **item tree picture**:")
+    bot.register_next_step_handler(msg, process_ts_tree_image, ts_info)
+
+def process_ts_tree_image(message, ts_info):
+    if message.photo:
+        ts_info['tree_image_file_id'] = message.photo[-1].file_id
+        msg = bot.send_message(message.chat.id, "Item tree picture received.\n\nFinally, what caption should go under the item tree picture?")
+        bot.register_next_step_handler(msg, process_ts_tree_caption, ts_info)
+    else:
+        msg = bot.send_message(message.chat.id, "That's not a photo. Please send an image.")
+        bot.register_next_step_handler(msg, process_ts_tree_image, ts_info)
+
+def process_ts_tree_caption(message, ts_info):
+    ts_info['tree_caption'] = message.text.strip()
     
+    # Save everything to the database
     try:
         with get_db() as conn:
             with conn.cursor() as cur:
+                # We use the same columns as before, but store file_id instead of URL
                 cur.execute("""
                     UPDATE traveling_spirit 
-                    SET is_active = TRUE, name = %s, dates = %s, image_url = %s, items = %s, last_updated = NOW()
+                    SET is_active = TRUE, name = %s, dates = %s, image_url = %s, items = %s, 
+                        item_tree_image_url = %s, item_tree_caption = %s, last_updated = NOW()
                     WHERE id = 1
-                """, (ts_info['name'], ts_info['dates'], ts_info['image_url'], ts_info['items']))
+                """, (ts_info['name'], ts_info['dates'], ts_info['image_file_id'], ts_info['items'], 
+                      ts_info['tree_image_file_id'], ts_info['tree_caption']))
                 conn.commit()
-        bot.send_message(message.chat.id, "✅ **Success!** The Traveling Spirit information has been saved permanently.")
+        bot.send_message(message.chat.id, "✅ **Success!** All Traveling Spirit information has been updated.")
     except Exception as e:
         logger.error(f"Failed to save TS info to DB: {e}")
         bot.send_message(message.chat.id, "⚠️ **Database Error!** Could not save the spirit information.")
