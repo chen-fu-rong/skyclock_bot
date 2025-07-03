@@ -94,14 +94,16 @@ def init_db():
 
 # In bot.py, replace the old scrape_traveling_spirit function with this one.
 
+# In bot.py, replace the existing scraper with this diagnostic version.
+
 def scrape_traveling_spirit():
     """
-    Scrapes the Sky Fandom Wiki for the current Traveling Spirit using a
-    final, more resilient "search and find" method.
+    DIAGNOSTIC VERSION: This function's goal is to log the text content
+    of the wiki page so we can see what the bot sees.
     """
     URL = "https://sky-children-of-the-light.fandom.com/wiki/Traveling_Spirits"
     headers = {
-        'User-Agent': 'SkyClockBot/1.2 (Python/Requests;)'
+        'User-Agent': 'SkyClockBot/1.3 (Python/Requests; Diagnostic)'
     }
     
     try:
@@ -110,64 +112,24 @@ def scrape_traveling_spirit():
 
         soup = BeautifulSoup(response.content, 'html.parser')
 
-        # --- FINAL, MOST ROBUST METHOD ---
-        # 1. Find all H2 headers on the page.
-        all_headers = soup.find_all('h2')
+        # --- DIAGNOSTIC STEP ---
+        # Find the main content area of the page
+        content_area = soup.find('div', id='mw-content-text')
         
-        ts_table = None
-        for header in all_headers:
-            # 2. Check if the header text contains "Current Traveling Spirit".
-            if header.get_text(strip=True) == "Current Traveling Spirit":
-                # 3. If found, get the very next table element.
-                ts_table = header.find_next_sibling('table', class_='article-table')
-                break # Stop searching once we've found it
-
-        if not ts_table:
-            logger.warning("Scraper could not find the 'Current Traveling Spirit' header or its subsequent table.")
-            return {"is_active": False}
-            
-        # --- DATA EXTRACTION (This part remains mostly the same) ---
-        data = {"is_active": True, "items": []}
-        
-        # Check if caption exists before trying to access its text
-        if ts_table.caption:
-            data['name'] = ts_table.caption.text.replace('Traveling Spirit', '').strip()
+        if content_area:
+            # Get all the text from the main content area
+            page_text = content_area.get_text(separator=' ', strip=True)
+            # Log the first 1500 characters so we can inspect it
+            logger.info(f"DIAGNOSTIC WIKI TEXT: {page_text[:1500]}")
         else:
-            data['name'] = "Unknown Spirit (Name not found)"
+            logger.warning("DIAGNOSTIC: Could not find the main content area ('mw-content-text').")
 
+        # For the user, the function will always fail for now.
+        return {"is_active": False}
 
-        rows = ts_table.find_all('tr')
-        if len(rows) > 1:
-            # Find all header cells in the second row for dates
-            date_cells = rows[1].find_all('th')
-            for cell in date_cells:
-                if 'Arrives:' in cell.text:
-                    data['arrives'] = cell.text.replace('Arrives:', '').strip()
-                if 'Departs:' in cell.text:
-                    data['departs'] = cell.text.replace('Departs:', '').strip()
-
-        for row in rows[2:]:
-            cells = row.find_all('td')
-            if len(cells) >= 2:
-                item_name = cells[0].text.strip()
-                # Clean up price string more aggressively
-                item_price = ' '.join(cells[1].text.split())
-                if item_name and "Total" not in item_name:
-                    data["items"].append({"name": item_name, "price": item_price})
-        
-        # If after all that, we have no items, it's likely the wrong table.
-        if not data["items"]:
-             logger.warning("Scraper found a table but it was empty. The page structure might have changed.")
-             return {"is_active": False}
-
-        return data
-
-    except requests.exceptions.RequestException as e:
-        logger.error(f"Web scraping network error: {e}")
-        return {"is_active": False, "error": "Network error while fetching data."}
     except Exception as e:
-        logger.error(f"Web scraping parsing error: {e}", exc_info=True)
-        return {"is_active": False, "error": "A critical error occurred while parsing the website."}
+        logger.error(f"DIAGNOSTIC SCRAPER FAILED: {e}", exc_info=True)
+        return {"is_active": False, "error": "A critical error occurred during diagnostics."}
 
 # ======================== UTILITIES ============================
 def format_time(dt, fmt):
