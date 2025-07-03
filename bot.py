@@ -92,14 +92,16 @@ def init_db():
 # ======================== WEB SCRAPING UTILITY ============================
 # In bot.py, replace the old scrape_traveling_spirit function with this one.
 
+# In bot.py, replace the old scrape_traveling_spirit function with this one.
+
 def scrape_traveling_spirit():
     """
-    Scrapes the Sky Fandom Wiki for the current Traveling Spirit using a more robust method.
-    Returns a dictionary with the spirit's info, or a dictionary with an error.
+    Scrapes the Sky Fandom Wiki for the current Traveling Spirit using a
+    final, more resilient "search and find" method.
     """
     URL = "https://sky-children-of-the-light.fandom.com/wiki/Traveling_Spirits"
     headers = {
-        'User-Agent': 'SkyClockBot/1.1 (Python/Requests;)'
+        'User-Agent': 'SkyClockBot/1.2 (Python/Requests;)'
     }
     
     try:
@@ -108,30 +110,35 @@ def scrape_traveling_spirit():
 
         soup = BeautifulSoup(response.content, 'html.parser')
 
-        # --- NEW, MORE ROBUST METHOD ---
-        # 1. Find the header for the "Current Traveling Spirit" section. The ID is usually "Current_Traveling_Spirit".
-        current_ts_header = soup.find('span', id='Current_Traveling_Spirit')
+        # --- FINAL, MOST ROBUST METHOD ---
+        # 1. Find all H2 headers on the page.
+        all_headers = soup.find_all('h2')
         
-        if not current_ts_header:
-            # If the header isn't found, there's no active spirit announced on the page.
-            return {"is_active": False}
-
-        # 2. Find the table which is the next sibling element to the header's parent container.
-        # This is a common structure on Fandom wikis.
-        ts_table = current_ts_header.find_parent('h2').find_next_sibling('table', class_='article-table')
+        ts_table = None
+        for header in all_headers:
+            # 2. Check if the header text contains "Current Traveling Spirit".
+            if header.get_text(strip=True) == "Current Traveling Spirit":
+                # 3. If found, get the very next table element.
+                ts_table = header.find_next_sibling('table', class_='article-table')
+                break # Stop searching once we've found it
 
         if not ts_table:
-            logger.error("Found the TS header but could not find the sibling table.")
-            # Added more detailed logging for future debugging
-            logger.debug(f"HTML near header: {current_ts_header.find_parent('h2').prettify()}")
-            return {"is_active": False, "error": "Found spirit header, but couldn't find table."}
+            logger.warning("Scraper could not find the 'Current Traveling Spirit' header or its subsequent table.")
+            return {"is_active": False}
             
         # --- DATA EXTRACTION (This part remains mostly the same) ---
         data = {"is_active": True, "items": []}
-        data['name'] = ts_table.caption.text.replace('Traveling Spirit', '').strip()
+        
+        # Check if caption exists before trying to access its text
+        if ts_table.caption:
+            data['name'] = ts_table.caption.text.replace('Traveling Spirit', '').strip()
+        else:
+            data['name'] = "Unknown Spirit (Name not found)"
+
 
         rows = ts_table.find_all('tr')
         if len(rows) > 1:
+            # Find all header cells in the second row for dates
             date_cells = rows[1].find_all('th')
             for cell in date_cells:
                 if 'Arrives:' in cell.text:
@@ -143,10 +150,16 @@ def scrape_traveling_spirit():
             cells = row.find_all('td')
             if len(cells) >= 2:
                 item_name = cells[0].text.strip()
-                item_price = cells[1].text.strip().replace('\n', ' ').replace(' ', '')
+                # Clean up price string more aggressively
+                item_price = ' '.join(cells[1].text.split())
                 if item_name and "Total" not in item_name:
                     data["items"].append({"name": item_name, "price": item_price})
         
+        # If after all that, we have no items, it's likely the wrong table.
+        if not data["items"]:
+             logger.warning("Scraper found a table but it was empty. The page structure might have changed.")
+             return {"is_active": False}
+
         return data
 
     except requests.exceptions.RequestException as e:
@@ -154,7 +167,7 @@ def scrape_traveling_spirit():
         return {"is_active": False, "error": "Network error while fetching data."}
     except Exception as e:
         logger.error(f"Web scraping parsing error: {e}", exc_info=True)
-        return {"is_active": False, "error": "Could not parse the website."}
+        return {"is_active": False, "error": "A critical error occurred while parsing the website."}
 
 # ======================== UTILITIES ============================
 def format_time(dt, fmt):
