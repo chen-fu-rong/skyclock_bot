@@ -91,6 +91,24 @@ def init_db():
             except Exception as e:
                 logger.error(f"Error ensuring new columns exist: {str(e)}")
 
+            # --- ADD THIS NEW TABLE DEFINITION ---
+            cur.execute("""
+            CREATE TABLE IF NOT EXISTS traveling_spirit (
+                id INT PRIMARY KEY DEFAULT 1,
+                is_active BOOLEAN DEFAULT FALSE,
+                name TEXT,
+                dates TEXT,
+                image_url TEXT,
+                items TEXT,
+                last_updated TIMESTAMP DEFAULT NOW()
+            );
+            """)
+
+            # --- Ensure there is a default row to update ---
+            cur.execute("""
+            INSERT INTO traveling_spirit (id) VALUES (1) ON CONFLICT (id) DO NOTHING;
+            """)
+
             conn.commit()
 
 # ======================== WEB SCRAPING UTILITY ============================
@@ -272,69 +290,50 @@ def sky_clock(message):
 def show_traveling_spirit(message):
     update_last_interaction(message.from_user.id)
     
-    # --- MANUAL UPDATE SECTION ---
-    ts_data = {
-        "is_active": True,
-        "name": "Marching Adventurer",
-        "dates": "July 3rd to July 6th, 2025",
-        "image_url": "https://static.wikia.nocookie.net/sky-children-of-the-light/images/5/55/Traveling_Spirit_at_Home.png",
-        "items": [
-            {"name": "Marching Adventurer's Hat", "price": "44 Candles"},
-            {"name": "Marching Adventurer's Cape", "price": "70 Candles"},
-            {"name": "Marching Expression", "price": "13 Hearts"},
-        ]
-    }
-    
-    next_arrival_date = "Thursday, July 17th, 2025"
+    try:
+        with get_db() as conn:
+            with conn.cursor() as cur:
+                # Fetch the data from the database
+                cur.execute("SELECT is_active, name, dates, image_url, items FROM traveling_spirit WHERE id = 1")
+                ts_data_row = cur.fetchone()
 
-    if ts_data.get("is_active"):
-        caption_text = (
-            f"**A Traveling Spirit is here!** ✨\n\n"
-            f"The **{ts_data['name']}** has arrived!\n\n"
-            f"**Dates:** {ts_data.get('dates', 'N/A')}\n"
-            f"**Location:** You can find them in the Home space!\n\n"
-            f"**Items Available:**\n"
-        )
-        for item in ts_data['items']:
-            caption_text += f"- {item['name']}: {item['price']}\n"
-        
-        photo_url = ts_data.get("image_url")
+        if not ts_data_row:
+            raise ValueError("Traveling spirit data not found in database.")
 
-        try:
-            if not photo_url:
-                raise ValueError("Image URL is missing")
+        is_active, name, dates, image_url, items_text = ts_data_row
 
-            # 1. Download the image
-            image_response = requests.get(photo_url, timeout=10)
-            image_response.raise_for_status()
-            
-            # 2. Process the image with Pillow to ensure it's clean
-            image_data = io.BytesIO(image_response.content)
-            img = Image.open(image_data)
-            
-            # 3. Save the cleaned image back to an in-memory file
-            clean_image_bio = io.BytesIO()
-            img.save(clean_image_bio, 'PNG')
-            clean_image_bio.seek(0) # IMPORTANT: Rewind the file to the beginning
-
-            # 4. Send the clean, processed image data
-            bot.send_photo(
-                chat_id=message.chat.id, 
-                photo=clean_image_bio, # Send the processed image
-                caption=caption_text, 
-                parse_mode='Markdown'
+        if is_active:
+            caption_text = (
+                f"**A Traveling Spirit is here!** ✨\n\n"
+                f"The **{name}** has arrived!\n\n"
+                f"**Dates:** {dates}\n"
+                f"**Location:** You can find them in the Home space!\n\n"
+                f"**Items Available:**\n"
             )
-        except Exception as e:
-            # If anything fails, send the text message as a fallback
-            logger.error(f"Could not process and send TS photo. Error: {e}")
-            bot.send_message(message.chat.id, caption_text, parse_mode='Markdown')
+            if items_text:
+                caption_text += items_text
 
-    else:
-        response = (
-            f"The Traveling Spirit has departed for now.\n\n"
-            f"The next spirit is scheduled to arrive on **{next_arrival_date}**."
-        )
-        bot.send_message(message.chat.id, response, parse_mode='Markdown')
+            try:
+                if not image_url: raise ValueError("Image URL is missing")
+                image_response = requests.get(image_url, timeout=10)
+                image_response.raise_for_status()
+                
+                image_data = io.BytesIO(image_response.content)
+                img = Image.open(image_data)
+                clean_image_bio = io.BytesIO()
+                img.save(clean_image_bio, 'PNG')
+                clean_image_bio.seek(0)
+                
+                bot.send_photo(message.chat.id, clean_image_bio, caption=caption_text, parse_mode='Markdown')
+            except Exception as e:
+                logger.error(f"Could not send TS photo. Error: {e}")
+                bot.send_message(message.chat.id, caption_text, parse_mode='Markdown')
+        else:
+            bot.send_message(message.chat.id, "The Traveling Spirit has departed for now, or has not been announced yet.")
+
+    except Exception as e:
+        logger.error(f"Failed to fetch TS data from DB: {e}")
+        bot.send_message(message.chat.id, "Sorry, I couldn't retrieve the Traveling Spirit information right now.")
 
 # ... The rest of your code (wax events, settings, admin panel, etc.) remains the same ...
 # I have omitted it here for brevity, but you should keep it in your file.
@@ -419,11 +418,12 @@ def send_settings_menu(chat_id, current_format):
     markup.row('🔙 Main Menu')
     bot.send_message(chat_id, "Settings:", reply_markup=markup)
 
+# In send_admin_menu function
 def send_admin_menu(chat_id):
     markup = telebot.types.ReplyKeyboardMarkup(resize_keyboard=True)
     markup.row('👥 User Stats', '📢 Broadcast')
-    markup.row('⏰ Manage Reminders', '📊 System Status')
-    markup.row('🔍 Find User')
+    markup.row('⏰ Manage Reminders', '✨ Edit Traveling Spirit') # <-- ADD THIS BUTTON
+    markup.row('📊 System Status', '🔍 Find User')
     markup.row('🔙 Main Menu')
     bot.send_message(chat_id, "Admin Panel:", reply_markup=markup)
 
@@ -983,6 +983,71 @@ def user_stats(message):
         if "column \"last_interaction\" does not exist" in str(e):
             error_msg += "\n\n⚠️ Database needs migration! Please restart the bot."
         bot.send_message(message.chat.id, error_msg)
+
+# ===================== ADMIN TS EDITOR FLOW (Database Version) =====================
+@bot.message_handler(func=lambda msg: msg.text == '✨ Edit Traveling Spirit' and is_admin(msg.from_user.id))
+def handle_ts_edit_start(message):
+    markup = telebot.types.ReplyKeyboardMarkup(resize_keyboard=True)
+    markup.row('✅ Spirit is Active')
+    markup.row('❌ Spirit is Inactive')
+    markup.row('🔙 Admin Panel')
+    bot.send_message(message.chat.id, "Set the Traveling Spirit's status:", reply_markup=markup)
+    bot.register_next_step_handler(message, process_ts_status)
+
+def process_ts_status(message):
+    if message.text == '🔙 Admin Panel': return send_admin_menu(message.chat.id)
+
+    if message.text == '✅ Spirit is Active':
+        msg = bot.send_message(message.chat.id, "Please send the spirit's name (e.g., Marching Adventurer):", reply_markup=telebot.types.ReplyKeyboardRemove())
+        bot.register_next_step_handler(msg, process_ts_name)
+    elif message.text == '❌ Spirit is Inactive':
+        try:
+            with get_db() as conn:
+                with conn.cursor() as cur:
+                    cur.execute("UPDATE traveling_spirit SET is_active = FALSE, last_updated = NOW() WHERE id = 1")
+                    conn.commit()
+            bot.send_message(message.chat.id, "✅ Traveling Spirit status has been set to INACTIVE.")
+        except Exception as e:
+            logger.error(f"Failed to set TS inactive: {e}")
+            bot.send_message(message.chat.id, "⚠️ Error updating status in the database.")
+        send_admin_menu(message.chat.id)
+    else:
+        bot.send_message(message.chat.id, "Invalid option. Please try again.")
+        handle_ts_edit_start(message)
+
+def process_ts_name(message):
+    ts_info = {'name': message.text.strip()}
+    msg = bot.send_message(message.chat.id, f"Name set to: **{ts_info['name']}**\n\nNow, send the dates (e.g., July 3 to July 6):", parse_mode='Markdown')
+    bot.register_next_step_handler(msg, process_ts_dates, ts_info)
+
+def process_ts_dates(message, ts_info):
+    ts_info['dates'] = message.text.strip()
+    msg = bot.send_message(message.chat.id, f"Dates set to: **{ts_info['dates']}**\n\nNow, send the direct URL for the spirit's image:", parse_mode='Markdown')
+    bot.register_next_step_handler(msg, process_ts_image, ts_info)
+
+def process_ts_image(message, ts_info):
+    ts_info['image_url'] = message.text.strip()
+    msg = bot.send_message(message.chat.id, f"Image URL set.\n\nFinally, send the item list. Each item on a **new line**, like this:\n`Marching Adventurer's Hat: 44 Candles`", parse_mode='Markdown')
+    bot.register_next_step_handler(msg, process_ts_items, ts_info)
+
+def process_ts_items(message, ts_info):
+    ts_info['items'] = message.text.strip()
+    
+    try:
+        with get_db() as conn:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    UPDATE traveling_spirit 
+                    SET is_active = TRUE, name = %s, dates = %s, image_url = %s, items = %s, last_updated = NOW()
+                    WHERE id = 1
+                """, (ts_info['name'], ts_info['dates'], ts_info['image_url'], ts_info['items']))
+                conn.commit()
+        bot.send_message(message.chat.id, "✅ **Success!** The Traveling Spirit information has been saved permanently.")
+    except Exception as e:
+        logger.error(f"Failed to save TS info to DB: {e}")
+        bot.send_message(message.chat.id, "⚠️ **Database Error!** Could not save the spirit information.")
+    
+    send_admin_menu(message.chat.id)
 
 # Broadcast Messaging
 @bot.message_handler(func=lambda msg: msg.text == '📢 Broadcast' and is_admin(msg.from_user.id))
