@@ -26,10 +26,11 @@ def schedule_all_existing_reminders():
                 """)
                 reminders = cur.fetchall()
                 for rem in reminders:
+                    # rem[0] is id, rem[1] is user_id, rem[2] is chat_id, etc.
                     schedule_reminder(rem[0], rem[1], rem[2], rem[3], rem[4], rem[5], rem[6])
                 logger.info(f"Scheduled {len(reminders)} existing reminders.")
     except Exception as e:
-        logger.error(f"Error scheduling existing reminders: {e}")
+        logger.error(f"Error scheduling existing reminders: {str(e)}")
 
 if __name__ == '__main__':
     logger.info("Initializing database...")
@@ -39,6 +40,7 @@ if __name__ == '__main__':
     logger.info("Setting up scheduled tasks...")
     setup_scheduled_tasks()
     
+    # Schedule all reminders from the database on startup
     schedule_all_existing_reminders()
     
     logger.info("Setting up webhook...")
@@ -48,7 +50,7 @@ if __name__ == '__main__':
         bot.set_webhook(url=WEBHOOK_URL)
         logger.info(f"Webhook set to: {WEBHOOK_URL}")
     except Exception as e:
-        logger.error(f"Error setting webhook: {e}")
+        logger.error(f"Error setting webhook: {str(e)}")
 
     logger.info("Starting Flask app...")
     port = int(os.environ.get('PORT', 10000))

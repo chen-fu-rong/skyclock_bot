@@ -10,7 +10,6 @@ from flask import Flask, request
 import telebot
 from apscheduler.schedulers.background import BackgroundScheduler
 from datetime import datetime, timedelta, date
-from psycopg2 import errors as psycopg2_errors
 
 # Configure logging
 logging.basicConfig(
@@ -112,7 +111,6 @@ def init_db():
             );
             """)
             
-            # CORRECTED SCHEMA: Added chat_id column to reminders table
             cur.execute("""
             CREATE TABLE IF NOT EXISTS reminders (
                 id SERIAL PRIMARY KEY,
@@ -127,12 +125,16 @@ def init_db():
             """)
 
             try:
+                # This ensures the column exists for older database schemas
                 cur.execute("ALTER TABLE reminders ADD COLUMN IF NOT EXISTS chat_id BIGINT;")
                 logger.info("Ensured chat_id column exists in reminders")
             except Exception as e:
-                logger.error(f"Error ensuring chat_id column: {str(e)}")
+                # Catch potential errors if the ALTER command fails under certain conditions
+                logger.error(f"Could not ensure chat_id column, might already exist: {str(e)}")
+                conn.rollback() # Rollback the failed transaction
+            else:
+                conn.commit() # Commit if successful
 
-            conn.commit()
 
 # ======================== UTILITIES ============================
 def format_time(dt, fmt):
@@ -300,77 +302,64 @@ def settings_menu(message):
 
 # ====================== WAX EVENT HANDLERS =====================
 @bot.message_handler(func=lambda msg: msg.text in ['🧓 Grandma', '🐢 Turtle', '🌋 Geyser'])
-def handle_event(message):
+def handle_event_choice(message):
     update_last_interaction(message.from_user.id)
-    mapping = {
-        '🧓 Grandma': ('Grandma', 'every 2 hours at :30', 'even'),
-        '🐢 Turtle': ('Turtle', 'every hour at :50', 'all'),
-        '🌋 Geyser': ('Geyser', 'every 2 hours', 'odd')
-    }
+    event_name = message.text.split(" ")[1]
     
-    event_name, _, _ = mapping[message.text]
-    user = get_user(message.from_user.id)
-    if not user: 
-        return bot.send_message(message.chat.id, "Please set your timezone first with /start")
+    markup = telebot.types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
+    markup.row("⏰ Set a Reminder")
+    markup.row("🔙 Wax Events")
     
-    # Simplified this section to directly ask for reminder setup
-    markup = telebot.types.ReplyKeyboardMarkup(resize_keyboard=True)
-    markup.row('⏰ Set a Reminder')
+    bot.send_message(message.chat.id, f"Selected {event_name}. What would you like to do?", reply_markup=markup)
+    bot.register_next_step_handler(message, handle_reminder_setup, event_name)
+
+def handle_reminder_setup(message, event_name):
+    if message.text == '🔙 Wax Events':
+        return send_wax_menu(message.chat.id)
+    
+    if message.text == "⏰ Set a Reminder":
+        msg = bot.send_message(message.chat.id, f"What time is {event_name}? (e.g., 14:30 or 2:30pm)")
+        bot.register_next_step_handler(msg, ask_reminder_minutes, event_name)
+
+def ask_reminder_minutes(message, event_name):
+    event_time_str = message.text
+    markup = telebot.types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
+    markup.row('5', '10', '15')
+    markup.row('30')
     markup.row('🔙 Wax Events')
-    bot.send_message(message.chat.id, f"What would you like to do for {event_name}?", reply_markup=markup)
-    bot.register_next_step_handler(message, ask_reminder_frequency, event_name)
+    bot.send_message(message.chat.id, "How many minutes before should I remind you?", reply_markup=markup)
+    bot.register_next_step_handler(message, ask_reminder_frequency, event_name, event_time_str)
 
+def ask_reminder_frequency(message, event_name, event_time_str):
+    if message.text == '🔙 Wax Events':
+        return send_wax_menu(message.chat.id)
+        
+    notify_before = int(message.text)
+    markup = telebot.types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
+    markup.row('⏰ One Time Only', '🔄 Every Day')
+    markup.row('🔙 Wax Events')
+    bot.send_message(message.chat.id, "How often should this reminder repeat?", reply_markup=markup)
+    bot.register_next_step_handler(message, save_reminder, event_name, event_time_str, notify_before)
 
-def ask_reminder_frequency(message, event_type):
+def save_reminder(message, event_type, event_time_str, notify_before):
     if message.text == '🔙 Wax Events':
         return send_wax_menu(message.chat.id)
 
-    markup = telebot.types.ReplyKeyboardMarkup(resize_keyboard=True)
-    markup.row('⏰ One Time Reminder', '🔄 Daily Reminder')
-    markup.row('🔙 Wax Events')
-    
-    bot.send_message(message.chat.id, "Choose reminder frequency:", reply_markup=markup)
-    bot.register_next_step_handler(message, ask_event_time, event_type)
-
-def ask_event_time(message, event_type):
-    is_daily = message.text == '🔄 Daily Reminder'
-    msg = bot.send_message(message.chat.id, "Please enter the event time you want a reminder for (e.g., 14:30 or 2:30pm):")
-    bot.register_next_step_handler(msg, ask_reminder_minutes, event_type, is_daily)
-
-def ask_reminder_minutes(message, event_type, is_daily):
-    event_time_str = message.text
-    markup = telebot.types.ReplyKeyboardMarkup(resize_keyboard=True)
-    markup.row('5', '10', '15')
-    markup.row('20', '30', '45')
-    markup.row('🔙 Wax Events')
-    bot.send_message(message.chat.id, "How many minutes before the event should I remind you?", reply_markup=markup)
-    bot.register_next_step_handler(message, save_reminder, event_type, is_daily, event_time_str)
-
-
-def save_reminder(message, event_type, is_daily, event_time_str):
-    if message.text.strip() == '🔙 Wax Events':
-        return send_wax_menu(message.chat.id)
-
     try:
-        mins = int(message.text.strip())
-        if not 1 <= mins <= 60:
-            raise ValueError("Minutes must be between 1-60")
-
+        is_daily = 'Every Day' in message.text
         user = get_user(message.from_user.id)
         if not user:
             return bot.send_message(message.chat.id, "Please set your timezone first with /start")
 
-        tz, fmt = user
+        tz, _ = user
         user_tz = pytz.timezone(tz)
         now = datetime.now(user_tz)
 
         # Flexible time parsing
         try:
-            # Try 24hr format first
-            time_obj = datetime.strptime(event_time_str, '%H:%M').time()
-        except ValueError:
-            # Try 12hr format
             time_obj = datetime.strptime(event_time_str.upper(), '%I:%M%p').time()
+        except ValueError:
+            time_obj = datetime.strptime(event_time_str, '%H:%M').time()
 
         event_time_user = now.replace(hour=time_obj.hour, minute=time_obj.minute, second=0, microsecond=0)
 
@@ -385,28 +374,34 @@ def save_reminder(message, event_type, is_daily, event_time_str):
                 cur.execute("""
                 INSERT INTO reminders (user_id, chat_id, event_type, event_time_utc, notify_before, is_daily, created_at)
                 VALUES (%s, %s, %s, %s, %s, %s, NOW()) RETURNING id
-                """, (message.from_user.id, chat_id, event_type, event_time_utc, mins, is_daily))
+                """, (message.from_user.id, chat_id, event_type, event_time_utc, notify_before, is_daily))
                 reminder_id = cur.fetchone()[0]
                 conn.commit()
 
-        schedule_reminder(reminder_id, message.from_user.id, chat_id, event_type, event_time_utc, mins, is_daily)
+        schedule_reminder(reminder_id, message.from_user.id, chat_id, event_type, event_time_utc, notify_before, is_daily)
         
         bot.send_message(chat_id, f"✅ Reminder set for {event_type} at {event_time_str}!")
         send_main_menu(chat_id, message.from_user.id)
 
     except (ValueError, TypeError) as e:
         logger.warning(f"User input error in save_reminder: {e}")
-        bot.send_message(message.chat.id, f"❌ Invalid input. Please try again.")
+        bot.send_message(message.chat.id, "❌ Invalid time format. Please use HH:MM or h:MMapm (e.g., 14:30 or 2:30pm).")
         send_wax_menu(message.chat.id)
     except Exception as e:
         logger.error("Reminder save failed", exc_info=True)
         bot.send_message(message.chat.id, "⚠️ Failed to set reminder.")
         send_main_menu(message.chat.id, message.from_user.id)
 
+
 # ==================== REMINDER SCHEDULING =====================
 def schedule_reminder(reminder_id, user_id, chat_id, event_type, event_time_utc, notify_before, is_daily):
     try:
+        # FIX: Make the datetime from the database timezone-aware
+        if event_time_utc.tzinfo is None:
+            event_time_utc = pytz.utc.localize(event_time_utc)
+
         notify_time = event_time_utc - timedelta(minutes=notify_before)
+        
         if notify_time < datetime.now(pytz.utc):
             if is_daily:
                 notify_time += timedelta(days=1)
@@ -416,7 +411,7 @@ def schedule_reminder(reminder_id, user_id, chat_id, event_type, event_time_utc,
                         cur.execute("UPDATE reminders SET event_time_utc = %s WHERE id = %s", (event_time_utc, reminder_id))
                         conn.commit()
             else:
-                logger.warning(f"Reminder {reminder_id} is in the past, skipping.")
+                logger.warning(f"Reminder {reminder_id} is in the past, skipping and deleting.")
                 scheduler.remove_job(f'rem_{reminder_id}', ignore_missing=True)
                 with get_db() as conn:
                     with conn.cursor() as cur:
@@ -435,7 +430,7 @@ def schedule_reminder(reminder_id, user_id, chat_id, event_type, event_time_utc,
         logger.info(f"Scheduled reminder: ID={reminder_id} for user {user_id} at {notify_time}")
         
     except Exception as e:
-        logger.error(f"Error scheduling reminder {reminder_id}: {e}")
+        logger.error(f"Error scheduling reminder {reminder_id}: {str(e)}")
 
 def send_reminder_notification(reminder_id, user_id, chat_id, event_type, event_time_utc, notify_before, is_daily):
     try:
@@ -455,6 +450,7 @@ def send_reminder_notification(reminder_id, user_id, chat_id, event_type, event_
         
         if is_daily:
             new_event_time = event_time_utc + timedelta(days=1)
+            # Reschedule for the next day
             schedule_reminder(reminder_id, user_id, chat_id, event_type, new_event_time, notify_before, True)
         else:
             # Remove one-time reminder from DB after sending
@@ -464,11 +460,18 @@ def send_reminder_notification(reminder_id, user_id, chat_id, event_type, event_
                     conn.commit()
                     
     except Exception as e:
-        logger.error(f"Error sending reminder {reminder_id}: {e}")
+        logger.error(f"Error sending reminder {reminder_id}: {str(e)}")
         notify_admin(f"⚠️ Reminder failed: {reminder_id}\nError: {e}")
 
-# ====================== ADMIN PANEL ===========================
-# ... (Admin functions remain unchanged)
+# ====================== ADMIN PANEL & OTHER HANDLERS ===========================
+# (This section includes all admin functions, which remain unchanged)
+
+@bot.message_handler(func=lambda msg: msg.text == '👤 Admin Panel' and is_admin(msg.from_user.id))
+def handle_admin_panel(message):
+    update_last_interaction(message.from_user.id)
+    send_admin_menu(message.chat.id)
+
+# ... all other admin functions like user_stats, broadcast, etc. go here ...
 
 # ========================== WEBHOOK ============================
 @app.route('/webhook', methods=['POST'])
