@@ -1,10 +1,13 @@
-# bot.py - Fixed Version with Reminder Flow Fixes
+# bot.py - Implemented with Traveling Spirit Web Scraping Feature
+
 import os
 import pytz
 import logging
 import traceback
 import psycopg2
 import psutil
+import requests
+from bs4 import BeautifulSoup
 from flask import Flask, request
 import telebot
 from apscheduler.schedulers.background import BackgroundScheduler
@@ -67,8 +70,10 @@ def init_db():
             CREATE TABLE IF NOT EXISTS reminders (
                 id SERIAL PRIMARY KEY,
                 user_id BIGINT REFERENCES users(user_id),
+                chat_id BIGINT,
                 event_type TEXT,
                 event_time_utc TIMESTAMP,
+                trigger_time TIMESTAMP,
                 notify_before INT,
                 is_daily BOOLEAN DEFAULT FALSE,
                 created_at TIMESTAMP DEFAULT NOW()
@@ -77,23 +82,228 @@ def init_db():
             
             # Add any missing columns
             try:
-                cur.execute("""
-                ALTER TABLE reminders 
-                ADD COLUMN IF NOT EXISTS created_at TIMESTAMP DEFAULT NOW();
-                """)
-                logger.info("Ensured created_at column exists in reminders")
+                cur.execute("ALTER TABLE reminders ADD COLUMN IF NOT EXISTS chat_id BIGINT;")
+                cur.execute("ALTER TABLE reminders ADD COLUMN IF NOT EXISTS trigger_time TIMESTAMP;")
             except Exception as e:
-                logger.error(f"Error ensuring created_at column: {str(e)}")
-            
-            try:
-                cur.execute("""
-                ALTER TABLE reminders 
-                ADD COLUMN IF NOT EXISTS is_daily BOOLEAN DEFAULT FALSE;
-                """)
-            except:
-                pass  # Already exists
-            
+                logger.error(f"Error ensuring new columns exist: {str(e)}")
+
             conn.commit()
+
+# ======================== WEB SCRAPING UTILITY ============================
+def scrape_traveling_spirit():
+    """
+    Scrapes the Sky Fandom Wiki for the current Traveling Spirit.
+    Returns a dictionary with the spirit's info, or a dictionary with an error.
+    """
+    URL = "https://sky-children-of-the-light.fandom.com/wiki/Traveling_Spirits"
+    headers = {
+        'User-Agent': 'SkyClockBot/1.0 (Python/Requests; Discord: your_username#1234)'
+    }
+    
+    try:
+        response = requests.get(URL, headers=headers, timeout=10)
+        response.raise_for_status()
+
+        soup = BeautifulSoup(response.content, 'html.parser')
+
+        ts_table = soup.find('table', class_='article-table')
+        if not ts_table or "Traveling Spirit" not in ts_table.caption.text:
+            return {"is_active": False, "error": "Could not find the TS table."}
+
+        data = {"is_active": True, "items": []}
+        data['name'] = ts_table.caption.text.replace('Traveling Spirit', '').strip()
+
+        rows = ts_table.find_all('tr')
+        if len(rows) > 1:
+            date_cells = rows[1].find_all('th')
+            for cell in date_cells:
+                if 'Arrives:' in cell.text:
+                    data['arrives'] = cell.text.replace('Arrives:', '').strip()
+                if 'Departs:' in cell.text:
+                    data['departs'] = cell.text.replace('Departs:', '').strip()
+
+        for row in rows[2:]:
+            cells = row.find_all('td')
+            if len(cells) >= 2:
+                item_name = cells[0].text.strip()
+                item_price = cells[1].text.strip().replace('\n', ' ')
+                if item_name and "Total" not in item_name:
+                    data["items"].append({"name": item_name, "price": item_price})
+
+        return data
+
+    except requests.exceptions.RequestException as e:
+        logger.error(f"Web scraping network error: {e}")
+        return {"is_active": False, "error": "Network error while fetching data."}
+    except Exception as e:
+        logger.error(f"Web scraping parsing error: {e}", exc_info=True)
+        return {"is_active": False, "error": "Could not parse the website."}
+
+
+# ======================== UTILITIES ============================
+def format_time(dt, fmt):
+    return dt.strftime('%I:%M %p') if fmt == '12hr' else dt.strftime('%H:%M')
+
+def get_user(user_id):
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT timezone, time_format FROM users WHERE user_id = %s", (user_id,))
+            return cur.fetchone()
+
+def set_timezone(user_id, chat_id, tz):
+    try:
+        with get_db() as conn:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    INSERT INTO users (user_id, chat_id, timezone, last_interaction) 
+                    VALUES (%s, %s, %s, NOW())
+                    ON CONFLICT (user_id) DO UPDATE 
+                    SET chat_id = EXCLUDED.chat_id, timezone = EXCLUDED.timezone, last_interaction = NOW();
+                """, (user_id, chat_id, tz))
+                conn.commit()
+        logger.info(f"Timezone set for user {user_id}: {tz}")
+        return True
+    except Exception as e:
+        logger.error(f"Failed to set timezone for user {user_id}: {str(e)}")
+        logger.error(traceback.format_exc())
+        return False
+
+def set_time_format(user_id, fmt):
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            cur.execute("UPDATE users SET time_format = %s, last_interaction = NOW() WHERE user_id = %s", (fmt, user_id))
+            conn.commit()
+
+def update_last_interaction(user_id):
+    try:
+        with get_db() as conn:
+            with conn.cursor() as cur:
+                cur.execute("UPDATE users SET last_interaction = NOW() WHERE user_id = %s", (user_id,))
+                conn.commit()
+    except Exception as e:
+        logger.error(f"Error updating last interaction for {user_id}: {str(e)}")
+
+# ===================== ADMIN UTILITIES =========================
+def is_admin(user_id):
+    return str(user_id) == ADMIN_USER_ID
+
+# ===================== NAVIGATION HELPERS ======================
+def send_main_menu(chat_id, user_id=None):
+    markup = telebot.types.ReplyKeyboardMarkup(resize_keyboard=True)
+    markup.row('🕒 Sky Clock', '✨ Traveling Spirit')
+    markup.row('🕯 Wax Events', '💎 Shards')
+    markup.row('⚙️ Settings')
+    if user_id and is_admin(user_id):
+        markup.row('👤 Admin Panel')
+    bot.send_message(chat_id, "Main Menu:", reply_markup=markup)
+
+def send_wax_menu(chat_id):
+    markup = telebot.types.ReplyKeyboardMarkup(resize_keyboard=True)
+    markup.row('🧓 Grandma', '🐢 Turtle', '🌋 Geyser')
+    markup.row('🔙 Main Menu')
+    bot.send_message(chat_id, "Wax Events:", reply_markup=markup)
+
+def send_settings_menu(chat_id, current_format):
+    markup = telebot.types.ReplyKeyboardMarkup(resize_keyboard=True)
+    markup.row(f'🕰 Change Time Format (Now: {current_format})')
+    markup.row('🔙 Main Menu')
+    bot.send_message(chat_id, "Settings:", reply_markup=markup)
+
+def send_admin_menu(chat_id):
+    markup = telebot.types.ReplyKeyboardMarkup(resize_keyboard=True)
+    markup.row('👥 User Stats', '📢 Broadcast')
+    markup.row('⏰ Manage Reminders', '📊 System Status')
+    markup.row('🔍 Find User')
+    markup.row('🔙 Main Menu')
+    bot.send_message(chat_id, "Admin Panel:", reply_markup=markup)
+
+# ======================= GLOBAL HANDLERS =======================
+@bot.message_handler(func=lambda msg: msg.text == '🔙 Main Menu')
+def handle_back_to_main(message):
+    update_last_interaction(message.from_user.id)
+    send_main_menu(message.chat.id, message.from_user.id)
+
+# ======================= START FLOW ============================
+@bot.message_handler(commands=['start'])
+def start(message):
+    update_last_interaction(message.from_user.id)
+    markup = telebot.types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
+    markup.row('🇲🇲 Set to Myanmar Time')
+    bot.send_message(
+        message.chat.id,
+        f"Hello {message.from_user.first_name}! 👋\nWelcome to Sky Clock Bot!\n\nPlease type your timezone (e.g. Asia/Yangon), or choose an option:",
+        reply_markup=markup
+    )
+    bot.register_next_step_handler(message, save_timezone)
+
+def save_timezone(message):
+    user_id, chat_id = message.from_user.id, message.chat.id
+    tz_text = 'Asia/Yangon' if message.text == '🇲🇲 Set to Myanmar Time' else message.text
+    try:
+        pytz.timezone(tz_text)
+        if set_timezone(user_id, chat_id, tz_text):
+            bot.send_message(chat_id, f"✅ Timezone set to: {tz_text}")
+            send_main_menu(chat_id, user_id)
+        else:
+            bot.send_message(chat_id, "⚠️ Failed to save timezone. Please try /start again.")
+    except pytz.UnknownTimeZoneError:
+        bot.send_message(chat_id, "❌ Invalid timezone. Please try again:")
+        bot.register_next_step_handler(message, save_timezone)
+    except Exception as e:
+        logger.error(f"Error saving timezone: {str(e)}")
+        bot.send_message(chat_id, "⚠️ Unexpected error. Please try /start again.")
+
+# ===================== MAIN MENU HANDLERS ======================
+@bot.message_handler(func=lambda msg: msg.text == '🕒 Sky Clock')
+def sky_clock(message):
+    update_last_interaction(message.from_user.id)
+    user = get_user(message.from_user.id)
+    if not user: return bot.send_message(message.chat.id, "Please set your timezone with /start")
+    
+    tz, fmt = user
+    user_tz = pytz.timezone(tz)
+    now = datetime.now()
+    local_time, sky_time = now.astimezone(user_tz), now.astimezone(SKY_TZ)
+    time_diff = local_time - sky_time
+    hours, rem = divmod(abs(time_diff.total_seconds()), 3600)
+    minutes = rem // 60
+    direction = "ahead of" if time_diff.total_seconds() > 0 else "behind"
+    
+    text = (f"🌥 Sky Time: {format_time(sky_time, fmt)}\n"
+            f"🌍 Your Time: {format_time(local_time, fmt)}\n"
+            f"⏱ You are {int(hours)}h {int(minutes)}m {direction} Sky Time")
+    bot.send_message(message.chat.id, text)
+
+@bot.message_handler(commands=['ts'])
+@bot.message_handler(func=lambda msg: msg.text == '✨ Traveling Spirit')
+def show_traveling_spirit(message):
+    update_last_interaction(message.from_user.id)
+    msg = bot.send_message(message.chat.id, "Searching for the Traveling Spirit... ✨")
+    
+    ts_data = scrape_traveling_spirit()
+    
+    if ts_data and ts_data.get("is_active"):
+        response = f"**A Traveling Spirit is here!** ✨\n\n" \
+                   f"The **{ts_data.get('name', 'Unknown Spirit')}** has arrived!\n\n"
+        if ts_data.get('departs'):
+             response += f"**Departure:** {ts_data.get('departs')}\n"
+        response += "**Location:** You can find them in the Home space!\n\n**Items Available:**\n"
+        if ts_data.get("items"):
+            for item in ts_data['items']:
+                response += f"- {item['name']}: {item['price']}\n"
+        else:
+            response += "_Could not parse item list._\n"
+        response += f"\n_Data from the Sky Fandom Wiki._"
+    else:
+        response = "The Traveling Spirit has departed or has not been announced yet.\n\n" \
+                   "They typically arrive every other Thursday. I'll keep an eye out for the next announcement!"
+        if ts_data and ts_data.get("error"):
+            logger.warning(f"TS Scraper Info: {ts_data.get('error')}")
+
+    bot.edit_message_text(response, message.chat.id, msg.message_id, parse_mode='Markdown')
+
+# ... The rest of your code (wax events, settings, admin panel, etc.) remains the same ...
+# I have omitted it here for brevity, but you should keep it in your file.
 
 # ======================== UTILITIES ============================
 def format_time(dt, fmt):
