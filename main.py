@@ -1,10 +1,7 @@
 # main.py
 import os
 import logging
-from bot import app, bot
-from services.database import init_db
-from services.scheduler import scheduler, setup_scheduled_tasks
-from handlers import register_handlers
+from bot import app, bot, init_db, setup_scheduled_tasks, schedule_reminder, get_db
 
 # Configure logging
 logging.basicConfig(
@@ -25,14 +22,23 @@ if __name__ == '__main__':
     logger.info("Setting up scheduled tasks...")
     setup_scheduled_tasks()
     
-    # Schedule existing reminders
+    # Schedule existing reminders from the database
     logger.info("Scheduling existing reminders...")
-    from handlers.reminders import schedule_existing_reminders
-    schedule_existing_reminders()
+    try:
+        with get_db() as conn:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    SELECT id, user_id, event_type, event_time_utc, notify_before, is_daily
+                    FROM reminders
+                    WHERE event_time_utc > NOW() - INTERVAL '1 day'
+                """)
+                reminders = cur.fetchall()
+                for rem in reminders:
+                    schedule_reminder(rem[1], rem[0], rem[2], rem[3], rem[4], rem[5])
+                logger.info(f"Scheduled {len(reminders)} existing reminders")
+    except Exception as e:
+        logger.error(f"Error scheduling existing reminders: {str(e)}")
     
-    logger.info("Registering handlers...")
-    register_handlers(bot)
-
     logger.info("Setting up webhook...")
     WEBHOOK_URL = os.getenv("WEBHOOK_URL") or "https://skyclock-bot.onrender.com/webhook"
     try:
