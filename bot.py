@@ -277,7 +277,7 @@ def show_traveling_spirit(message):
         "is_active": True,
         "name": "Marching Adventurer",
         "dates": "July 3rd to July 6th, 2025",
-        "image_url": "https://static.wikia.nocookie.net/sky-children-of-the-light/images/c/c2/Marching_Adventurer.png",
+        "image_url": "https://static.wikia.nocookie.net/sky-children-of-the-light/images/5/55/Traveling_Spirit_at_Home.png",
         "items": [
             {"name": "Marching Adventurer's Hat", "price": "44 Candles"},
             {"name": "Marching Adventurer's Cape", "price": "70 Candles"},
