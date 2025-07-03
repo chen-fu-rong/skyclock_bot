@@ -1342,37 +1342,38 @@ def index():
     return 'Sky Clock Bot is running.'
 
 # ========================== MAIN ===============================
-if __name__ == '__main__':
-    logger.info("Initializing database...")
-    init_db()
-    logger.info("Database initialized")
-    
-    # Schedule existing reminders on startup
-    logger.info("Scheduling existing reminders...")
-    try:
-        with get_db() as conn:
-            with conn.cursor() as cur:
-                cur.execute("""
-                    SELECT id, user_id, event_type, event_time_utc, notify_before, is_daily
-                    FROM reminders
-                """)
-                reminders = cur.fetchall()
-                for rem in reminders:
-                    event_time_from_db = rem[3]
-                    # Make the datetime aware of the UTC timezone
-                    if event_time_from_db.tzinfo is None:
-                         aware_event_time_utc = pytz.utc.localize(event_time_from_db)
-                    else:
-                         aware_event_time_utc = event_time_from_db
-                    
-                    schedule_reminder(rem[1], rem[0], rem[2], aware_event_time_utc, rem[4], rem[5])
+# ===================== BOT INITIALIZATION ======================
+# This code runs once when Gunicorn starts the bot.
 
-                logger.info(f"Scheduled {len(reminders)} existing reminders")
-    except Exception as e:
-        logger.error(f"Error scheduling existing reminders: {str(e)}")
-    
-    logger.info("Setting up webhook...")
-    bot.remove_webhook()
-    bot.set_webhook(url=WEBHOOK_URL)
-    logger.info(f"Webhook set to: {WEBHOOK_URL}")
-    
+logger.info("Initializing database...")
+init_db()
+logger.info("Database initialized")
+
+# Schedule existing reminders on startup
+logger.info("Scheduling existing reminders...")
+try:
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT id, user_id, event_type, event_time_utc, notify_before, is_daily
+                FROM reminders
+            """)
+            reminders = cur.fetchall()
+            for rem in reminders:
+                event_time_from_db = rem[3]
+                # Make the datetime aware of the UTC timezone
+                if event_time_from_db.tzinfo is None:
+                    aware_event_time_utc = pytz.utc.localize(event_time_from_db)
+                else:
+                    aware_event_time_utc = event_time_from_db
+                
+                schedule_reminder(rem[1], rem[0], rem[2], aware_event_time_utc, rem[4], rem[5])
+
+            logger.info(f"Scheduled {len(reminders)} existing reminders")
+except Exception as e:
+    logger.error(f"Error scheduling existing reminders: {str(e)}")
+
+logger.info("Setting up webhook...")
+bot.remove_webhook()
+bot.set_webhook(url=WEBHOOK_URL)
+logger.info(f"BOT IS LIVE - Webhook set to: {WEBHOOK_URL}")
