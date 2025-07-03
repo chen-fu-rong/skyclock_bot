@@ -55,61 +55,53 @@ def get_db():
         logger.error(f"Database connection failed: {str(e)}")
         raise
 
+# In bot.py, replace your init_db function with this one.
+
 def init_db():
-    with get_db() as conn:
-        with conn.cursor() as cur:
-            # Create users table if not exists
-            cur.execute("""
-            CREATE TABLE IF NOT EXISTS users (
-                user_id BIGINT PRIMARY KEY,
-                chat_id BIGINT NOT NULL,
-                timezone TEXT NOT NULL,
-                time_format TEXT DEFAULT '12hr',
-                last_interaction TIMESTAMP DEFAULT NOW()
-            );
-            """)
-            
-            # Create reminders table if not exists with created_at column
-            cur.execute("""
-            CREATE TABLE IF NOT EXISTS reminders (
-                id SERIAL PRIMARY KEY,
-                user_id BIGINT REFERENCES users(user_id),
-                chat_id BIGINT,
-                event_type TEXT,
-                event_time_utc TIMESTAMP,
-                trigger_time TIMESTAMP,
-                notify_before INT,
-                is_daily BOOLEAN DEFAULT FALSE,
-                created_at TIMESTAMP DEFAULT NOW()
-            );
-            """)
-            
-            # Add any missing columns
-            try:
-                cur.execute("ALTER TABLE reminders ADD COLUMN IF NOT EXISTS chat_id BIGINT;")
-                cur.execute("ALTER TABLE reminders ADD COLUMN IF NOT EXISTS trigger_time TIMESTAMP;")
-            except Exception as e:
-                logger.error(f"Error ensuring new columns exist: {str(e)}")
+    logger = logging.getLogger(__name__)
+    try:
+        with get_db() as conn:
+            with conn.cursor() as cur:
+                logger.info("Creating table: users")
+                cur.execute("""
+                CREATE TABLE IF NOT EXISTS users (
+                    user_id BIGINT PRIMARY KEY,
+                    chat_id BIGINT NOT NULL,
+                    timezone TEXT NOT NULL,
+                    time_format TEXT DEFAULT '12hr',
+                    last_interaction TIMESTAMP DEFAULT NOW()
+                );
+                """)
 
-            # --- ADD THIS NEW TABLE DEFINITION ---
-            cur.execute("""
-            CREATE TABLE IF NOT EXISTS traveling_spirit (
-                id INT PRIMARY KEY DEFAULT 1,
-                is_active BOOLEAN DEFAULT FALSE,
-                name TEXT,
-                dates TEXT,
-                image_url TEXT,
-                items TEXT,
-                last_updated TIMESTAMP DEFAULT NOW()
-            );
-            """)
+                logger.info("Creating table: reminders")
+                cur.execute("""
+                CREATE TABLE IF NOT EXISTS reminders (
+                    id SERIAL PRIMARY KEY, user_id BIGINT REFERENCES users(user_id),
+                    chat_id BIGINT, event_type TEXT, event_time_utc TIMESTAMP,
+                    trigger_time TIMESTAMP, notify_before INT, is_daily BOOLEAN DEFAULT FALSE,
+                    created_at TIMESTAMP DEFAULT NOW()
+                );
+                """)
 
-            # --- Ensure there is a default row to update ---
-            cur.execute("""
-            INSERT INTO traveling_spirit (id) VALUES (1) ON CONFLICT (id) DO NOTHING;
-            """)
+                logger.info("Creating table: traveling_spirit")
+                cur.execute("""
+                CREATE TABLE IF NOT EXISTS traveling_spirit (
+                    id INT PRIMARY KEY DEFAULT 1, is_active BOOLEAN DEFAULT FALSE,
+                    name TEXT, dates TEXT, image_url TEXT, items TEXT,
+                    item_tree_image_url TEXT, item_tree_caption TEXT,
+                    last_updated TIMESTAMP DEFAULT NOW()
+                );
+                """)
 
-            conn.commit()
+                logger.info("Ensuring default row exists in traveling_spirit")
+                cur.execute("INSERT INTO traveling_spirit (id) VALUES (1) ON CONFLICT (id) DO NOTHING;")
+                
+                conn.commit()
+                logger.info("Database initialization complete.")
+    except Exception as e:
+        logger.error(f"DATABASE INITIALIZATION FAILED: {e}", exc_info=True)
+        # This will make it clear in the logs if there's a problem.
+        raise e
 
 # ======================== WEB SCRAPING UTILITY ============================
 
@@ -979,31 +971,8 @@ def user_stats(message):
         bot.send_message(message.chat.id, error_msg)
 
 # ===================== ADMIN TS EDITOR FLOW (Database Version) =====================
-def process_ts_status(message):
-    if message.text == '🔙 Admin Panel': 
-        return send_admin_menu(message.chat.id)
-
-    if message.text == '✅ Spirit is Active':
-        msg = bot.send_message(message.chat.id, "Please send the spirit's name (e.g., Marching Adventurer):", reply_markup=telebot.types.ReplyKeyboardRemove())
-        bot.register_next_step_handler(msg, process_ts_name)
-    elif message.text == '❌ Spirit is Inactive':
-        try:
-            with get_db() as conn:
-                with conn.cursor() as cur:
-                    cur.execute("UPDATE traveling_spirit SET is_active = FALSE, last_updated = NOW() WHERE id = 1")
-                    conn.commit()
-            bot.send_message(message.chat.id, "✅ Traveling Spirit status has been set to INACTIVE.")
-        except Exception as e:
-            logger.error(f"Failed to set TS inactive: {e}")
-            bot.send_message(message.chat.id, "⚠️ Error updating status in the database.")
-        send_admin_menu(message.chat.id)
-    else:
-        bot.send_message(message.chat.id, "Invalid option. Please try again.")
-        # We call the *starting* function here, which is now defined below and will be found correctly.
-        handle_ts_edit_start(message)
-
-def process_ts_name(message):
-    ts_info = {'name': message.text.strip()}
+def process_ts_name(message, ts_info):
+    ts_info['name'] = message.text.strip()
     msg = bot.send_message(message.chat.id, f"Name set. Now, send the dates:")
     bot.register_next_step_handler(msg, process_ts_dates, ts_info)
 
@@ -1053,6 +1022,35 @@ def process_ts_tree_caption(message, ts_info):
         logger.error(f"Failed to save TS info to DB: {e}")
         bot.send_message(message.chat.id, "⚠️ **Database Error!**")
     send_admin_menu(message.chat.id)
+
+def process_ts_status(message):
+    if message.text == '🔙 Admin Panel': return send_admin_menu(message.chat.id)
+    if message.text == '✅ Spirit is Active':
+        ts_info = {} # Create the info dictionary here
+        msg = bot.send_message(message.chat.id, "Please send the spirit's name:", reply_markup=telebot.types.ReplyKeyboardRemove())
+        bot.register_next_step_handler(msg, process_ts_name, ts_info)
+    elif message.text == '❌ Spirit is Inactive':
+        try:
+            with get_db() as conn:
+                with conn.cursor() as cur:
+                    cur.execute("UPDATE traveling_spirit SET is_active = FALSE, last_updated = NOW() WHERE id = 1")
+                    conn.commit()
+            bot.send_message(message.chat.id, "✅ Traveling Spirit status set to INACTIVE.")
+        except Exception as e:
+            logger.error(f"Failed to set TS inactive: {e}")
+        send_admin_menu(message.chat.id)
+    else:
+        bot.send_message(message.chat.id, "Invalid option.")
+        handle_ts_edit_start(message)
+
+# Now, define the handler that STARTS the conversation LAST.
+@bot.message_handler(func=lambda msg: msg.text == '✨ Edit Traveling Spirit' and is_admin(msg.from_user.id))
+def handle_ts_edit_start(message):
+    markup = telebot.types.ReplyKeyboardMarkup(resize_keyboard=True)
+    markup.row('✅ Spirit is Active', '❌ Spirit is Inactive')
+    markup.row('🔙 Admin Panel')
+    bot.send_message(message.chat.id, "Set the Traveling Spirit's status:", reply_markup=markup)
+    bot.register_next_step_handler(message, process_ts_status)
 
 
 # Now, define the handler that STARTS the conversation LAST.
