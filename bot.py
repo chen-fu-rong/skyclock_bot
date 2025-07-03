@@ -1339,15 +1339,7 @@ def webhook():
 def index():
     return 'Sky Clock Bot is running.'
 
-# ===================== DEBUGGING HANDLER ======================
-# This handler will catch ANY text message sent to the bot.
-# It should be the last message handler defined in your file.
-@bot.message_handler(func=lambda message: True)
-def catch_all_handler(message):
-    logger.info(f"--- CATCH-ALL HANDLER TRIGGERED by user {message.from_user.id} ---")
-    logger.info(f"--- Message Text: '{message.text}' ---")
-    # This reply confirms to you in Telegram that the bot is alive.
-    bot.reply_to(message, "DEBUG: Bot is alive and received your message.")
+
 
 # ===================== BOT INITIALIZATION ======================
 # This code runs once when Gunicorn starts the bot.
