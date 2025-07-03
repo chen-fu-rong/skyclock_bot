@@ -90,26 +90,43 @@ def init_db():
             conn.commit()
 
 # ======================== WEB SCRAPING UTILITY ============================
+# In bot.py, replace the old scrape_traveling_spirit function with this one.
+
 def scrape_traveling_spirit():
     """
-    Scrapes the Sky Fandom Wiki for the current Traveling Spirit.
+    Scrapes the Sky Fandom Wiki for the current Traveling Spirit using a more robust method.
     Returns a dictionary with the spirit's info, or a dictionary with an error.
     """
     URL = "https://sky-children-of-the-light.fandom.com/wiki/Traveling_Spirits"
     headers = {
-        'User-Agent': 'SkyClockBot/1.0 (Python/Requests; Discord: your_username#1234)'
+        'User-Agent': 'SkyClockBot/1.1 (Python/Requests;)'
     }
     
     try:
-        response = requests.get(URL, headers=headers, timeout=10)
+        response = requests.get(URL, headers=headers, timeout=15)
         response.raise_for_status()
 
         soup = BeautifulSoup(response.content, 'html.parser')
 
-        ts_table = soup.find('table', class_='article-table')
-        if not ts_table or "Traveling Spirit" not in ts_table.caption.text:
-            return {"is_active": False, "error": "Could not find the TS table."}
+        # --- NEW, MORE ROBUST METHOD ---
+        # 1. Find the header for the "Current Traveling Spirit" section. The ID is usually "Current_Traveling_Spirit".
+        current_ts_header = soup.find('span', id='Current_Traveling_Spirit')
+        
+        if not current_ts_header:
+            # If the header isn't found, there's no active spirit announced on the page.
+            return {"is_active": False}
 
+        # 2. Find the table which is the next sibling element to the header's parent container.
+        # This is a common structure on Fandom wikis.
+        ts_table = current_ts_header.find_parent('h2').find_next_sibling('table', class_='article-table')
+
+        if not ts_table:
+            logger.error("Found the TS header but could not find the sibling table.")
+            # Added more detailed logging for future debugging
+            logger.debug(f"HTML near header: {current_ts_header.find_parent('h2').prettify()}")
+            return {"is_active": False, "error": "Found spirit header, but couldn't find table."}
+            
+        # --- DATA EXTRACTION (This part remains mostly the same) ---
         data = {"is_active": True, "items": []}
         data['name'] = ts_table.caption.text.replace('Traveling Spirit', '').strip()
 
@@ -126,10 +143,10 @@ def scrape_traveling_spirit():
             cells = row.find_all('td')
             if len(cells) >= 2:
                 item_name = cells[0].text.strip()
-                item_price = cells[1].text.strip().replace('\n', ' ')
+                item_price = cells[1].text.strip().replace('\n', ' ').replace(' ', '')
                 if item_name and "Total" not in item_name:
                     data["items"].append({"name": item_name, "price": item_price})
-
+        
         return data
 
     except requests.exceptions.RequestException as e:
@@ -138,7 +155,6 @@ def scrape_traveling_spirit():
     except Exception as e:
         logger.error(f"Web scraping parsing error: {e}", exc_info=True)
         return {"is_active": False, "error": "Could not parse the website."}
-
 
 # ======================== UTILITIES ============================
 def format_time(dt, fmt):
