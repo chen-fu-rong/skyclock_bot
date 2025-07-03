@@ -1355,11 +1355,17 @@ if __name__ == '__main__':
                 cur.execute("""
                     SELECT id, user_id, event_type, event_time_utc, notify_before, is_daily
                     FROM reminders
-                    WHERE event_time_utc > NOW() - INTERVAL '1 day'
                 """)
                 reminders = cur.fetchall()
                 for rem in reminders:
-                    schedule_reminder(rem[1], rem[0], rem[2], rem[3], rem[4], rem[5])
+                    # --- THIS IS THE FIX ---
+                    # The time from the DB is naive, so we make it aware of the UTC timezone.
+                    event_time_from_db = rem[3]
+                    aware_event_time_utc = pytz.utc.localize(event_time_from_db)
+                    
+                    # Pass the corrected, aware datetime to the scheduler function
+                    schedule_reminder(rem[1], rem[0], rem[2], aware_event_time_utc, rem[4], rem[5])
+
                 logger.info(f"Scheduled {len(reminders)} existing reminders")
     except Exception as e:
         logger.error(f"Error scheduling existing reminders: {str(e)}")
@@ -1370,4 +1376,6 @@ if __name__ == '__main__':
     logger.info(f"Webhook set to: {WEBHOOK_URL}")
     
     logger.info("Starting Flask app...")
-    app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 10000)))
+    # Note: Using Gunicorn is recommended for production instead of app.run()
+    # For Render, the start command is usually 'gunicorn bot:app'
+    # app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 10000)))
