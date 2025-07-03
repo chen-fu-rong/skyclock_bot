@@ -98,14 +98,16 @@ def init_db():
 
 # In bot.py, replace the scraper function with this final version.
 
+# In bot.py, replace the scraper function with this FINAL diagnostic version.
+
 def scrape_traveling_spirit():
     """
-    FINAL VERSION: Scrapes the Sky Fandom Wiki by targeting the
-    information box at the top of the page.
+    FINAL DIAGNOSTIC VERSION: This function's goal is to log the raw HTML
+    of the wiki page so we can see the correct tags and classes.
     """
     URL = "https://sky-children-of-the-light.fandom.com/wiki/Traveling_Spirits"
     headers = {
-        'User-Agent': 'SkyClockBot/2.0 (Python/Requests;)'
+        'User-Agent': 'SkyClockBot/Final-Diagnostic (Python/Requests;)'
     }
     
     try:
@@ -114,60 +116,17 @@ def scrape_traveling_spirit():
 
         soup = BeautifulSoup(response.content, 'html.parser')
 
-        # --- FINAL METHOD: TARGET THE INFOBOX ---
-        # 1. Find the main infobox table for the spirit.
-        # This table often contains all the key details in one place.
-        infobox_table = soup.find('table', class_='infobox')
-        
-        if not infobox_table:
-            logger.warning("Could not find the main 'infobox' table. The spirit may not be active.")
-            return {"is_active": False}
+        # --- FINAL DIAGNOSTIC STEP ---
+        # Log the first 2000 characters of the formatted HTML
+        # This will show us the structure of the top of the page
+        logger.info(f"DIAGNOSTIC HTML: {soup.prettify()[:2000]}")
 
-        data = {"is_active": True, "items": []}
-        
-        # 2. Iterate through the rows of the infobox to find data by its label.
-        rows = infobox_table.find_all('tr')
-        for row in rows:
-            header_cell = row.find('th')
-            data_cell = row.find('td')
-            
-            if header_cell and data_cell:
-                header_text = header_cell.get_text(strip=True)
-                # Find the Spirit's name
-                if "Spirit Page" in header_text:
-                    data['name'] = data_cell.get_text(strip=True)
-                # Find the dates
-                if "Dates of appearance" in header_text:
-                    dates = data_cell.get_text(separator=' ', strip=True)
-                    data['dates'] = dates
+        # For the user, the function will always fail for now.
+        return {"is_active": False}
 
-        # If we couldn't find a name, assume the spirit isn't active
-        if 'name' not in data:
-            logger.warning("Found an infobox, but it did not contain the spirit's name.")
-            return {"is_active": False}
-            
-        # 3. Now find the friendship tree (item list) table separately
-        # It's usually the first 'article-table' after the infobox
-        item_table = infobox_table.find_next('table', class_='article-table')
-
-        if item_table:
-            item_rows = item_table.find_all('tr')
-            for row in item_rows[1:]: # Skip header row
-                cells = row.find_all('td')
-                if len(cells) >= 2:
-                    item_name = cells[0].get_text(strip=True)
-                    item_price = ' '.join(cells[1].text.split())
-                    if item_name and "Total" not in item_name:
-                        data["items"].append({"name": item_name, "price": item_price})
-
-        return data
-
-    except requests.exceptions.RequestException as e:
-        logger.error(f"Web scraping network error: {e}")
-        return {"is_active": False, "error": "Network error."}
     except Exception as e:
-        logger.error(f"A critical parsing error occurred: {e}", exc_info=True)
-        return {"is_active": False, "error": "Critical parsing error."}
+        logger.error(f"FINAL DIAGNOSTIC SCRAPER FAILED: {e}", exc_info=True)
+        return {"is_active": False, "error": "A critical error occurred during final diagnostics."}
 
 # ======================== UTILITIES ============================
 def format_time(dt, fmt):
