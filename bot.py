@@ -14,6 +14,7 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from datetime import datetime, timedelta
 from psycopg2 import errors as psycopg2_errors
 
+
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,
@@ -286,7 +287,7 @@ def show_traveling_spirit(message):
     if ts_data.get("is_active"):
         # --- THIS IS THE MODIFIED PART ---
         
-        # 1. Build the text for the caption
+        # 1. Build the text for the caption first
         caption_text = (
             f"**A Traveling Spirit is here!** ✨\n\n"
             f"The **{ts_data['name']}** has arrived!\n\n"
@@ -297,23 +298,31 @@ def show_traveling_spirit(message):
         for item in ts_data['items']:
             caption_text += f"- {item['name']}: {item['price']}\n"
         
-        # 2. Get the image URL
-        photo_url = ts_data.get("https://static.wikia.nocookie.net/sky-children-of-the-light/images/5/55/Traveling_Spirit_at_Home.png")
+        photo_url = ts_data.get("image_url")
 
-        # 3. Send the photo with the text as a caption
-        if photo_url:
+        # 2. Try to download the image and send it as a photo
+        try:
+            if not photo_url:
+                raise ValueError("Image URL is missing")
+
+            # Download the image content
+            image_response = requests.get(photo_url, timeout=10)
+            image_response.raise_for_status()  # Raise an exception for bad status codes (like 404)
+            
+            # Send the downloaded image data directly
             bot.send_photo(
                 chat_id=message.chat.id, 
-                photo=photo_url, 
+                photo=image_response.content, # Send the actual image data
                 caption=caption_text, 
                 parse_mode='Markdown'
             )
-        else:
-            # Fallback in case there is no image URL
+        except Exception as e:
+            # 3. If sending the photo fails, send the text message as a fallback
+            logger.error(f"Could not send TS photo. Error: {e}")
             bot.send_message(message.chat.id, caption_text, parse_mode='Markdown')
 
     else:
-        # This part stays the same: send a simple text message
+        # This part for inactive spirits remains the same
         response = (
             f"The Traveling Spirit has departed for now.\n\n"
             f"The next spirit is scheduled to arrive on **{next_arrival_date}**."
