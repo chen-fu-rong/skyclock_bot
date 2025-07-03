@@ -14,30 +14,32 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-if __name__ == '__main__':
-    logger.info("Initializing database...")
-    init_db()
-    logger.info("Database initialized")
-
-    logger.info("Setting up scheduled tasks...")
-    setup_scheduled_tasks()
-    
-    # Schedule existing reminders from the database
+def schedule_all_existing_reminders():
+    """Load all reminders from DB and schedule them."""
     logger.info("Scheduling existing reminders...")
     try:
         with get_db() as conn:
             with conn.cursor() as cur:
                 cur.execute("""
-                    SELECT id, user_id, event_type, event_time_utc, notify_before, is_daily
+                    SELECT id, user_id, chat_id, event_type, event_time_utc, notify_before, is_daily
                     FROM reminders
-                    WHERE event_time_utc > NOW() - INTERVAL '1 day'
                 """)
                 reminders = cur.fetchall()
                 for rem in reminders:
-                    schedule_reminder(rem[1], rem[0], rem[2], rem[3], rem[4], rem[5])
-                logger.info(f"Scheduled {len(reminders)} existing reminders")
+                    schedule_reminder(rem[0], rem[1], rem[2], rem[3], rem[4], rem[5], rem[6])
+                logger.info(f"Scheduled {len(reminders)} existing reminders.")
     except Exception as e:
-        logger.error(f"Error scheduling existing reminders: {str(e)}")
+        logger.error(f"Error scheduling existing reminders: {e}")
+
+if __name__ == '__main__':
+    logger.info("Initializing database...")
+    init_db()
+    logger.info("Database initialized.")
+
+    logger.info("Setting up scheduled tasks...")
+    setup_scheduled_tasks()
+    
+    schedule_all_existing_reminders()
     
     logger.info("Setting up webhook...")
     WEBHOOK_URL = os.getenv("WEBHOOK_URL") or "https://skyclock-bot.onrender.com/webhook"
@@ -46,7 +48,7 @@ if __name__ == '__main__':
         bot.set_webhook(url=WEBHOOK_URL)
         logger.info(f"Webhook set to: {WEBHOOK_URL}")
     except Exception as e:
-        logger.error(f"Error setting webhook: {str(e)}")
+        logger.error(f"Error setting webhook: {e}")
 
     logger.info("Starting Flask app...")
     port = int(os.environ.get('PORT', 10000))
