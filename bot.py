@@ -262,33 +262,48 @@ def sky_clock(message):
             f"⏱ You are {int(hours)}h {int(minutes)}m {direction} Sky Time")
     bot.send_message(message.chat.id, text)
 
+# ===================== TRAVELING SPIRIT ======================
 @bot.message_handler(commands=['ts'])
 @bot.message_handler(func=lambda msg: msg.text == '✨ Traveling Spirit')
 def show_traveling_spirit(message):
     update_last_interaction(message.from_user.id)
-    msg = bot.send_message(message.chat.id, "Searching for the Traveling Spirit... ✨")
     
-    ts_data = scrape_traveling_spirit()
+    # --- MANUAL UPDATE SECTION ---
+    # Every 2 weeks, you only need to edit this dictionary.
+    # Set is_active to True when the spirit is here, and False when they are not.
+    ts_data = {
+        "is_active": True,
+        "name": "Marching Adventurer",
+        "dates": "July 3rd to July 6th, 2025",
+        "items": [
+            {"name": "Marching Adventurer's Hat", "price": "44 Candles"},
+            {"name": "Marching Adventurer's Cape", "price": "70 Candles"},
+            {"name": "Marching Expression", "price": "13 Hearts"},
+        ]
+    }
     
-    if ts_data and ts_data.get("is_active"):
-        response = f"**A Traveling Spirit is here!** ✨\n\n" \
-                   f"The **{ts_data.get('name', 'Unknown Spirit')}** has arrived!\n\n"
-        if ts_data.get('departs'):
-             response += f"**Dates:** {ts_data.get('dates', 'N/A')}\n"
-        response += "**Location:** You can find them in the Home space!\n\n**Items Available:**\n"
-        if ts_data.get("items"):
-            for item in ts_data['items']:
-                response += f"- {item['name']}: {item['price']}\n"
-        else:
-            response += "_Could not parse item list._\n"
-        response += f"\n_Data from the Sky Fandom Wiki._"
-    else:
-        response = "The Traveling Spirit has departed or has not been announced yet.\n\n" \
-                   "They typically arrive every other Thursday. I'll keep an eye out for the next announcement!"
-        if ts_data and ts_data.get("error"):
-            logger.warning(f"TS Scraper Info: {ts_data.get('error')}")
+    # --- This is the message for when the spirit has left ---
+    next_arrival_date = "Thursday, July 17th, 2025" # Manually update this too
 
-    bot.edit_message_text(response, message.chat.id, msg.message_id, parse_mode='Markdown')
+    # --- LOGIC TO SEND THE MESSAGE ---
+    if ts_data.get("is_active"):
+        response = (
+            f"**A Traveling Spirit is here!** ✨\n\n"
+            f"The **{ts_data['name']}** has arrived!\n\n"
+            f"**Dates:** {ts_data.get('dates', 'N/A')}\n"
+            f"**Location:** You can find them in the Home space!\n\n"
+            f"**Items Available:**\n"
+        )
+        for item in ts_data['items']:
+            response += f"- {item['name']}: {item['price']}\n"
+    else:
+        response = (
+            f"The Traveling Spirit has departed for now.\n\n"
+            f"The next spirit is scheduled to arrive on **{next_arrival_date}**.\n\n"
+            f"I'll have more info once they are announced!"
+        )
+
+    bot.send_message(message.chat.id, response, parse_mode='Markdown')
 
 # ... The rest of your code (wax events, settings, admin panel, etc.) remains the same ...
 # I have omitted it here for brevity, but you should keep it in your file.

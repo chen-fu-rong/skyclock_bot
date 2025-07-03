@@ -8,3 +8,5 @@ telebot
 psutil
 requests==2.31.0
 beautifulsoup4==4.12.3
+selenium==4.22.0
+webdriver-manager==4.0.1
