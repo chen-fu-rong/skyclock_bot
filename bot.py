@@ -269,12 +269,11 @@ def show_traveling_spirit(message):
     update_last_interaction(message.from_user.id)
     
     # --- MANUAL UPDATE SECTION ---
-    # Every 2 weeks, you only need to edit this dictionary.
-    # Set is_active to True when the spirit is here, and False when they are not.
     ts_data = {
         "is_active": True,
         "name": "Marching Adventurer",
         "dates": "July 3rd to July 6th, 2025",
+        "image_url": "https://static.wikia.nocookie.net/sky-children-of-the-light/images/5/52/Assembly-Spirit-Marching-Adventurer-Expression.png",
         "items": [
             {"name": "Marching Adventurer's Hat", "price": "44 Candles"},
             {"name": "Marching Adventurer's Cape", "price": "70 Candles"},
@@ -282,12 +281,13 @@ def show_traveling_spirit(message):
         ]
     }
     
-    # --- This is the message for when the spirit has left ---
-    next_arrival_date = "Thursday, July 17th, 2025" # Manually update this too
+    next_arrival_date = "Thursday, July 17th, 2025"
 
-    # --- LOGIC TO SEND THE MESSAGE ---
     if ts_data.get("is_active"):
-        response = (
+        # --- THIS IS THE MODIFIED PART ---
+        
+        # 1. Build the text for the caption
+        caption_text = (
             f"**A Traveling Spirit is here!** ✨\n\n"
             f"The **{ts_data['name']}** has arrived!\n\n"
             f"**Dates:** {ts_data.get('dates', 'N/A')}\n"
@@ -295,15 +295,30 @@ def show_traveling_spirit(message):
             f"**Items Available:**\n"
         )
         for item in ts_data['items']:
-            response += f"- {item['name']}: {item['price']}\n"
+            caption_text += f"- {item['name']}: {item['price']}\n"
+        
+        # 2. Get the image URL
+        photo_url = ts_data.get("https://static.wikia.nocookie.net/sky-children-of-the-light/images/7/78/Current-Traveling-Spirit.png")
+
+        # 3. Send the photo with the text as a caption
+        if photo_url:
+            bot.send_photo(
+                chat_id=message.chat.id, 
+                photo=photo_url, 
+                caption=caption_text, 
+                parse_mode='Markdown'
+            )
+        else:
+            # Fallback in case there is no image URL
+            bot.send_message(message.chat.id, caption_text, parse_mode='Markdown')
+
     else:
+        # This part stays the same: send a simple text message
         response = (
             f"The Traveling Spirit has departed for now.\n\n"
-            f"The next spirit is scheduled to arrive on **{next_arrival_date}**.\n\n"
-            f"I'll have more info once they are announced!"
+            f"The next spirit is scheduled to arrive on **{next_arrival_date}**."
         )
-
-    bot.send_message(message.chat.id, response, parse_mode='Markdown')
+        bot.send_message(message.chat.id, response, parse_mode='Markdown')
 
 # ... The rest of your code (wax events, settings, admin panel, etc.) remains the same ...
 # I have omitted it here for brevity, but you should keep it in your file.
