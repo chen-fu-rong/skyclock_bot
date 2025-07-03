@@ -298,7 +298,7 @@ def show_traveling_spirit(message):
             caption_text += f"- {item['name']}: {item['price']}\n"
         
         # 2. Get the image URL
-        photo_url = ts_data.get("https://static.wikia.nocookie.net/sky-children-of-the-light/images/7/78/Current-Traveling-Spirit.png")
+        photo_url = ts_data.get("https://static.wikia.nocookie.net/sky-children-of-the-light/images/5/55/Traveling_Spirit_at_Home.png")
 
         # 3. Send the photo with the text as a caption
         if photo_url:
