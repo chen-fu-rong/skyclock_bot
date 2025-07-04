@@ -357,6 +357,7 @@ def sky_clock(message: telebot.types.Message):
             f"⏱ You are {int(hours)}h {int(minutes)}m {direction} Sky Time") 
     bot.send_message(message.chat.id, text) 
 
+@bot.message_handler(commands=['ts'])
 @bot.message_handler(func=lambda msg: msg.text == TRAVELING_SPIRIT_BUTTON)
 def show_traveling_spirit(message: telebot.types.Message):
     """Displays information about the current Traveling Spirit."""
