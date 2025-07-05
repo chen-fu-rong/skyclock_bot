@@ -1,4 +1,4 @@
-# bot.py - Shard Data now stored and editable via PostgreSQL Database
+# bot.py - Day of Week column removed from Shard data
 
 import os
 import pytz
@@ -12,8 +12,6 @@ from flask import Flask, request
 import telebot
 from apscheduler.schedulers.background import BackgroundScheduler
 from datetime import datetime, timedelta
-# from psycopg2 import errors as psycopg2_errors # Not directly used for simple errors
-# import json # No longer directly loading shard_data.json
 
 # Configure logging
 logging.basicConfig(
@@ -79,13 +77,12 @@ DAILY_REMINDER_BUTTON = '🔄 Daily Reminder'
 PREVIOUS_DAY_BUTTON = '◀️ Previous Day'
 NEXT_DAY_BUTTON = '▶️ Next Day'
 
-# Admin Shard Editing Buttons (New)
+# Admin Shard Editing Buttons
 EDIT_SHARDS_BUTTON = '📝 Edit Shards'
 SAVE_SHARD_CHANGES_BUTTON = '💾 Save Changes'
 CANCEL_SHARD_EDIT_BUTTON = '❌ Cancel Edit'
 
 # Global dictionary to hold shard edit sessions for each admin user
-# IMPORTANT: This is in-memory and will reset if the bot restarts.
 user_shard_edit_sessions = {}
 
 
@@ -160,7 +157,6 @@ def init_db():
                 cur.execute("""
                 CREATE TABLE IF NOT EXISTS shard_events (
                     date DATE PRIMARY KEY,
-                    day_of_week TEXT,
                     shard_color TEXT,
                     realm TEXT,
                     location TEXT,
@@ -300,8 +296,8 @@ def send_admin_menu(chat_id: int):
     markup = telebot.types.ReplyKeyboardMarkup(resize_keyboard=True)
     markup.row(USER_STATS_BUTTON, BROADCAST_BUTTON)
     markup.row(MANAGE_REMINDERS_BUTTON, EDIT_TS_BUTTON)
-    markup.row(EDIT_SHARDS_BUTTON, FIND_USER_BUTTON) # Added EDIT_SHARDS_BUTTON
-    markup.row(SYSTEM_STATUS_BUTTON) # Moved system status
+    markup.row(EDIT_SHARDS_BUTTON, FIND_USER_BUTTON)
+    markup.row(SYSTEM_STATUS_BUTTON)
     markup.row(MAIN_MENU_BUTTON)
     bot.send_message(chat_id, "Admin Panel:", reply_markup=markup)
 
@@ -480,7 +476,7 @@ def get_shard_data_for_date(target_date: datetime.date) -> dict | None:
         with get_db() as conn:
             with conn.cursor() as cur:
                 cur.execute("""
-                    SELECT day_of_week, shard_color, realm, location, reward, memory,
+                    SELECT shard_color, realm, location, reward, memory,
                            first_shard_utc, second_shard_utc, last_shard_utc, eruption_status
                     FROM shard_events
                     WHERE date = %s
@@ -490,16 +486,15 @@ def get_shard_data_for_date(target_date: datetime.date) -> dict | None:
                     # Map the fetched row to a dictionary with the desired column names
                     return {
                         "Date": target_date.strftime("%Y-%m-%d"),
-                        "Day of Week": row[0],
-                        "Shard Color": row[1],
-                        "Realm": row[2],
-                        "Location": row[3],
-                        "Reward": row[4],
-                        "Memory": row[5],
-                        "First Shard (UTC)": row[6],
-                        "Second Shard (UTC)": row[7],
-                        "Last Shard (UTC)": row[8],
-                        "Eruption Status": row[9]
+                        "Shard Color": row[0],
+                        "Realm": row[1],
+                        "Location": row[2],
+                        "Reward": row[3],
+                        "Memory": row[4],
+                        "First Shard (UTC)": row[5],
+                        "Second Shard (UTC)": row[6],
+                        "Last Shard (UTC)": row[7],
+                        "Eruption Status": row[8]
                     }
                 return None
     except Exception as e:
@@ -523,6 +518,9 @@ def display_shard_info(chat_id: int, user_id: int, target_date: datetime.date, m
     shard_data_for_day = get_shard_data_for_date(target_date)
 
     message_text = ""
+    # Use target_date for Day of Week
+    message_text += f"💎 **Shard Eruption for {target_date.strftime('%Y-%m-%d (%A)')}:**\n"
+
     if shard_data_for_day and shard_data_for_day.get("Eruption Status") == "Erupted":
         shard_color = shard_data_for_day.get("Shard Color")
         realm = shard_data_for_day.get("Realm")
@@ -530,12 +528,11 @@ def display_shard_info(chat_id: int, user_id: int, target_date: datetime.date, m
         reward = shard_data_for_day.get("Reward")
         memory = shard_data_for_day.get("Memory")
 
-        message_text += f"💎 **Shard Eruption for {target_date.strftime('%Y-%m-%d (%A)')}:**\n"
         message_text += f"✨ Color: {shard_color if shard_color is not None else 'N/A'}\n"
         message_text += f"🗺️ Realm: {realm if realm is not None else 'N/A'}\n"
         message_text += f"📍 Location: {location if location is not None else 'N/A'}\n"
         message_text += f"🎁 Reward: {reward if reward is not None else 'N/A'}\n"
-        message_text += f"🧠 Memory: {memory if memory is not None else 'N/A'}\n\n" # Added memory
+        message_text += f"🧠 Memory: {memory if memory is not None else 'N/A'}\n\n"
         message_text += "**Times (Your Local Time):**\n"
 
         # Collect all possible shard time fields
@@ -584,7 +581,6 @@ def display_shard_info(chat_id: int, user_id: int, target_date: datetime.date, m
         message_text += "\n_Times shown are for the start of the shard window._"
 
     else:
-        message_text = f"💎 **Shard Events for {target_date.strftime('%Y-%m-%d (%A)')}:**\n"
         message_text += "No major shard eruption expected or data not available for this day."
 
     # Navigation buttons
@@ -1172,13 +1168,14 @@ def get_shard_date_to_edit_specific(message: telebot.types.Message):
             "date": shard_date,
             "data": existing_data if existing_data else {
                 "Date": shard_date.strftime("%Y-%m-%d"), # Ensure date is explicitly in data
-                "Day of Week": None, "Shard Color": None, "Realm": None, "Location": None,
+                "Shard Color": None, "Realm": None, "Location": None,
                 "Reward": None, "Memory": None,
                 "First Shard (UTC)": None, "Second Shard (UTC)": None, "Last Shard (UTC)": None,
                 "Eruption Status": None
             }
         }
         
+        # Send a NEW message from the bot for the editing menu
         initial_message_text = f"Loading shard data for {shard_date_str}..." # Or similar
         sent_message = bot.send_message(message.chat.id, initial_message_text)
         
@@ -1205,16 +1202,15 @@ def send_shard_edit_menu(chat_id: int, user_id: int, message_id_to_edit: int | N
     current_shard_data = session["data"]
 
     message_text = f"📝 **Editing Shard Data for {shard_date.strftime('%Y-%m-%d (%A)')}:**\n\n"
-    # Display current values
+    # Display current values (excluding 'Date' as it's in the header)
     for key, value in current_shard_data.items():
-        if key == "Date": continue # Date is in the header
+        if key == "Date": continue
         message_text += f"**{key.replace('(UTC)', '').strip()}:** {value if value is not None else 'N/A'}\n"
     
     markup = telebot.types.InlineKeyboardMarkup(row_width=2)
     
     # Buttons for each editable field
     markup.add(
-        telebot.types.InlineKeyboardButton("Edit Day of Week", callback_data=f"edit_shard_field_Day of Week"),
         telebot.types.InlineKeyboardButton("Edit Shard Color", callback_data=f"edit_shard_field_Shard Color"),
         telebot.types.InlineKeyboardButton("Edit Realm", callback_data=f"edit_shard_field_Realm"),
         telebot.types.InlineKeyboardButton("Edit Location", callback_data=f"edit_shard_field_Location"),
@@ -1313,7 +1309,7 @@ def handle_save_shard_changes_callback(call: telebot.types.CallbackQuery):
         # Prepare data for insertion/update (order must match SQL query)
         params = (
             shard_date, # Date comes first for the VALUES part
-            data_to_save.get("Day of Week"),
+            # Removed Day of Week from params
             data_to_save.get("Shard Color"),
             data_to_save.get("Realm"),
             data_to_save.get("Location"),
@@ -1329,11 +1325,10 @@ def handle_save_shard_changes_callback(call: telebot.types.CallbackQuery):
             with conn.cursor() as cur:
                 cur.execute("""
                     INSERT INTO shard_events (
-                        date, day_of_week, shard_color, realm, location, reward, memory,
+                        date, shard_color, realm, location, reward, memory,
                         first_shard_utc, second_shard_utc, last_shard_utc, eruption_status
-                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                     ON CONFLICT (date) DO UPDATE SET
-                        day_of_week = EXCLUDED.day_of_week,
                         shard_color = EXCLUDED.shard_color,
                         realm = EXCLUDED.realm,
                         location = EXCLUDED.location,
@@ -1343,7 +1338,7 @@ def handle_save_shard_changes_callback(call: telebot.types.CallbackQuery):
                         second_shard_utc = EXCLUDED.second_shard_utc,
                         last_shard_utc = EXCLUDED.last_shard_utc,
                         eruption_status = EXCLUDED.eruption_status
-                """, params)
+                """, params) # params directly matches the (date, + other fields)
                 conn.commit()
 
         bot.edit_message_text(
@@ -1419,7 +1414,7 @@ def get_target_user(message: telebot.types.Message):
         bot.register_next_step_handler(msg, process_user_message)
     except ValueError:
         bot.send_message(message.chat.id, "❌ Invalid user ID. Must be a number. Try again:")
-        bot.register_next_step_handler(message, get_target_user)
+        bot.register_next_step_handler(msg, get_target_user)
 
 def process_user_message(message: telebot.types.Message):
     """Sends a message to a specific user."""
