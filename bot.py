@@ -81,6 +81,12 @@ NEXT_DAY_BUTTON = '▶️ Next Day'
 
 # Admin Shard Editing Buttons (New)
 EDIT_SHARDS_BUTTON = '📝 Edit Shards'
+SAVE_SHARD_CHANGES_BUTTON = '💾 Save Changes'
+CANCEL_SHARD_EDIT_BUTTON = '❌ Cancel Edit'
+
+# Global dictionary to hold shard edit sessions for each admin user
+# IMPORTANT: This is in-memory and will reset if the bot restarts.
+user_shard_edit_sessions = {}
 
 
 bot = telebot.TeleBot(API_TOKEN, threaded=False)
@@ -1134,6 +1140,11 @@ def handle_ts_edit_start(message: telebot.types.Message):
 
 # --- ADMIN SHARD EDITING FLOW (NEW) ---
 
+# Global dictionary to hold shard edit sessions for each admin user
+# IMPORTANT: This is in-memory and will reset if the bot restarts.
+# For production, consider using a database to store in-progress edit states.
+user_shard_edit_sessions = {}
+
 @bot.message_handler(func=lambda msg: msg.text == EDIT_SHARDS_BUTTON and is_admin(msg.from_user.id))
 def handle_edit_shards_start(message: telebot.types.Message):
     """Starts the process of editing shard data for a specific date."""
@@ -1141,10 +1152,10 @@ def handle_edit_shards_start(message: telebot.types.Message):
     markup = telebot.types.ReplyKeyboardMarkup(resize_keyboard=True)
     markup.row(ADMIN_PANEL_BACK_BUTTON)
     msg = bot.send_message(message.chat.id, "Enter the date for shard data (YYYY-MM-DD), or /cancel to abort:", reply_markup=markup)
-    bot.register_next_step_handler(msg, get_shard_date_to_edit)
+    bot.register_next_step_handler(msg, get_shard_date_to_edit_specific)
 
-def get_shard_date_to_edit(message: telebot.types.Message):
-    """Prompts for shard date and fetches existing data."""
+def get_shard_date_to_edit_specific(message: telebot.types.Message):
+    """Parses shard date for specific editing and initiates the edit menu."""
     if message.text.lower() == '/cancel':
         send_admin_menu(message.chat.id)
         return
@@ -1155,127 +1166,163 @@ def get_shard_date_to_edit(message: telebot.types.Message):
         
         existing_data = get_shard_data_for_date(shard_date)
         
-        # Store data in a dictionary for multi-step processing
-        shard_input_data = {"date": shard_date}
-        if existing_data:
-            # We specifically update with the values from DB, making them editable
-            shard_input_data["Day of Week"] = existing_data.get("Day of Week")
-            shard_input_data["Shard Color"] = existing_data.get("Shard Color")
-            shard_input_data["Realm"] = existing_data.get("Realm")
-            shard_input_data["Location"] = existing_data.get("Location")
-            shard_input_data["Reward"] = existing_data.get("Reward")
-            shard_input_data["Memory"] = existing_data.get("Memory")
-            shard_input_data["First Shard (UTC)"] = existing_data.get("First Shard (UTC)")
-            shard_input_data["Second Shard (UTC)"] = existing_data.get("Second Shard (UTC)")
-            shard_input_data["Last Shard (UTC)"] = existing_data.get("Last Shard (UTC)")
-            shard_input_data["Eruption Status"] = existing_data.get("Eruption Status")
-
-
-            bot.send_message(message.chat.id, f"Editing existing shard data for {shard_date_str}. Current values:")
-            # Display current values for user reference
-            for key, value in shard_input_data.items():
-                if key == "date": continue # Skip date as it's displayed separately
-                bot.send_message(message.chat.id, f"- {key}: {value if value is not None else 'N/A'}")
-            bot.send_message(message.chat.id, "Enter new values. Type 'N/A' or '-' to leave blank/reset. Type /cancel at any step.")
-        else:
-            bot.send_message(message.chat.id, f"Creating new shard data for {shard_date_str}.")
-            bot.send_message(message.chat.id, "Enter values. Type 'N/A' or '-' to leave blank. Type /cancel at any step.")
+        # Initialize the session data for this admin user
+        # We store the date and a dictionary containing the current (or new) shard data
+        user_shard_edit_sessions[message.from_user.id] = {
+            "date": shard_date,
+            "data": existing_data if existing_data else {
+                "Date": shard_date.strftime("%Y-%m-%d"), # Ensure date is explicitly in data
+                "Day of Week": None, "Shard Color": None, "Realm": None, "Location": None,
+                "Reward": None, "Memory": None,
+                "First Shard (UTC)": None, "Second Shard (UTC)": None, "Last Shard (UTC)": None,
+                "Eruption Status": None
+            }
+        }
         
-        # Start the sequential input process
-        msg = bot.send_message(message.chat.id, "Enter Day of Week (e.g., Monday):")
-        bot.register_next_step_handler(msg, get_shard_day_of_week, shard_input_data)
+        send_shard_edit_menu(message.chat.id, message.from_user.id, message.message_id) # Pass message_id to edit the initial message
 
     except ValueError:
-        msg = bot.send_message(message.chat.id, "❌ Invalid date format. Please use YYYY-MM-DD. Try again:")
-        bot.register_next_step_handler(msg, get_shard_date_to_edit)
+        msg = bot.send_message(message.chat.id, "❌ Invalid date format. Please use `YYYY-MM-DD`. Try again:")
+        bot.register_next_step_handler(msg, get_shard_date_to_edit_specific)
     except Exception as e:
-        logger.error(f"Error getting shard date to edit: {e}", exc_info=True)
+        logger.error(f"Error getting shard date for specific edit: {e}", exc_info=True)
         bot.send_message(message.chat.id, "⚠️ An unexpected error occurred. Try again.")
         send_admin_menu(message.chat.id)
 
-# Helper for collecting text inputs that can be None/N/A
-def get_text_input(message_text: str, message: telebot.types.Message, next_step_function, shard_input_data: dict, field_name: str):
+def send_shard_edit_menu(chat_id: int, user_id: int, message_id_to_edit: int | None = None):
+    """Displays the current shard data being edited and provides editing options."""
+    session = user_shard_edit_sessions.get(user_id)
+    if not session:
+        bot.send_message(chat_id, "❌ No active shard editing session found. Please start again.")
+        send_admin_menu(chat_id)
+        return
+
+    shard_date = session["date"]
+    current_shard_data = session["data"]
+
+    message_text = f"📝 **Editing Shard Data for {shard_date.strftime('%Y-%m-%d (%A)')}:**\n\n"
+    # Display current values
+    for key, value in current_shard_data.items():
+        if key == "Date": continue # Date is in the header
+        message_text += f"**{key.replace('(UTC)', '').strip()}:** {value if value is not None else 'N/A'}\n"
+    
+    markup = telebot.types.InlineKeyboardMarkup(row_width=2)
+    
+    # Buttons for each editable field
+    markup.add(
+        telebot.types.InlineKeyboardButton("Edit Day of Week", callback_data=f"edit_shard_field_Day of Week"),
+        telebot.types.InlineKeyboardButton("Edit Shard Color", callback_data=f"edit_shard_field_Shard Color"),
+        telebot.types.InlineKeyboardButton("Edit Realm", callback_data=f"edit_shard_field_Realm"),
+        telebot.types.InlineKeyboardButton("Edit Location", callback_data=f"edit_shard_field_Location"),
+        telebot.types.InlineKeyboardButton("Edit Reward", callback_data=f"edit_shard_field_Reward"),
+        telebot.types.InlineKeyboardButton("Edit Memory", callback_data=f"edit_shard_field_Memory"),
+        telebot.types.InlineKeyboardButton("Edit First Shard (UTC)", callback_data=f"edit_shard_field_First Shard (UTC)"),
+        telebot.types.InlineKeyboardButton("Edit Second Shard (UTC)", callback_data=f"edit_shard_field_Second Shard (UTC)"),
+        telebot.types.InlineKeyboardButton("Edit Last Shard (UTC)", callback_data=f"edit_shard_field_Last Shard (UTC)"),
+        telebot.types.InlineKeyboardButton("Edit Eruption Status", callback_data=f"edit_shard_field_Eruption Status")
+    )
+    
+    markup.row(
+        telebot.types.InlineKeyboardButton(SAVE_SHARD_CHANGES_BUTTON, callback_data="save_shard_changes"),
+        telebot.types.InlineKeyboardButton(CANCEL_SHARD_EDIT_BUTTON, callback_data="cancel_shard_edit")
+    )
+
+    if message_id_to_edit:
+        try:
+            bot.edit_message_text(
+                chat_id=chat_id,
+                message_id=message_id_to_edit,
+                text=message_text,
+                reply_markup=markup,
+                parse_mode='Markdown'
+            )
+        except telebot.apihelper.ApiTelegramException as e:
+            if "message is not modified" in str(e).lower():
+                logger.info("Shard edit menu message not modified, skipping edit.")
+            else:
+                logger.error(f"Error editing shard edit menu: {e}", exc_info=True)
+                bot.send_message(chat_id, "⚠️ Error updating shard edit menu. Please try again.")
+    else:
+        bot.send_message(chat_id, message_text, reply_markup=markup, parse_mode='Markdown')
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("edit_shard_field_"))
+def handle_edit_shard_field_callback(call: telebot.types.CallbackQuery):
+    """Handles callback when an admin selects a specific field to edit."""
+    update_last_interaction(call.from_user.id)
+    user_id = call.from_user.id
+    field_name = call.data.split("edit_shard_field_")[1] # Extract field name
+    
+    session = user_shard_edit_sessions.get(user_id)
+    if not session:
+        bot.send_message(call.message.chat.id, "❌ No active editing session. Please start again.")
+        send_admin_menu(call.message.chat.id)
+        bot.answer_callback_query(call.id)
+        return
+
+    # Prompt for the new value for the selected field
+    msg = bot.send_message(call.message.chat.id, f"Enter new value for **{field_name}** (Type 'N/A' or '-' to clear, /cancel to abort edit):", parse_mode='Markdown')
+    
+    # Register the next step to process this specific field's input
+    bot.register_next_step_handler(msg, process_shard_field_update_input, user_id, field_name, call.message.message_id)
+    
+    bot.answer_callback_query(call.id) # Acknowledge the callback
+
+def process_shard_field_update_input(message: telebot.types.Message, user_id: int, field_name: str, original_message_id: int):
+    """Processes the text input for a specific shard field."""
+    update_last_interaction(user_id)
+    
     if message.text.lower() == '/cancel':
-        bot.send_message(message.chat.id, "Shard data editing cancelled.")
-        send_admin_menu(message.chat.id)
-        return False # Indicates cancellation
-    
-    value = message.text.strip()
-    shard_input_data[field_name] = None if value.lower() in ('n/a', '-') else value
-    
-    msg = bot.send_message(message.chat.id, message_text)
-    bot.register_next_step_handler(msg, next_step_function, shard_input_data)
-    return True # Indicates continuation
-
-# Sequence of functions to collect shard data (Updated to use new column names)
-def get_shard_day_of_week(message: telebot.types.Message, shard_input_data: dict):
-    if not get_text_input("Enter Shard Color (e.g., Red, Black, None):", message, get_shard_color, shard_input_data, "Day of Week"):
+        bot.send_message(message.chat.id, "Edit cancelled for this field. Returning to menu.")
+        send_shard_edit_menu(message.chat.id, user_id, original_message_id) # Return to edit menu
         return
 
-def get_shard_color(message: telebot.types.Message, shard_input_data: dict):
-    if not get_text_input("Enter Realm (e.g., Hidden Forest):", message, get_shard_realm, shard_input_data, "Shard Color"):
-        return
-
-def get_shard_realm(message: telebot.types.Message, shard_input_data: dict):
-    if not get_text_input("Enter Location (e.g., Treehouse Area):", message, get_shard_location, shard_input_data, "Realm"):
-        return
-
-def get_shard_location(message: telebot.types.Message, shard_input_data: dict):
-    if not get_text_input("Enter Reward (e.g., Ascended Candles, Wax):", message, get_shard_reward, shard_input_data, "Location"):
-        return
-
-def get_shard_reward(message: telebot.types.Message, shard_input_data: dict):
-    if not get_text_input("Enter Memory (e.g., Small, Large, None):", message, get_shard_memory, shard_input_data, "Reward"):
-        return
-
-def get_shard_memory(message: telebot.types.Message, shard_input_data: dict):
-    if not get_text_input("Enter First Shard (UTC HH:MM-HH:MM, or None):", message, get_shard_first_time, shard_input_data, "Memory"):
-        return
-
-def get_shard_first_time(message: telebot.types.Message, shard_input_data: dict):
-    if not get_text_input("Enter Second Shard (UTC HH:MM-HH:MM, or None):", message, get_shard_second_time, shard_input_data, "First Shard (UTC)"):
-        return
-
-def get_shard_second_time(message: telebot.types.Message, shard_input_data: dict):
-    if not get_text_input("Enter Last Shard (UTC HH:MM-HH:MM, or None):", message, get_shard_last_time, shard_input_data, "Second Shard (UTC)"):
-        return
-
-def get_shard_last_time(message: telebot.types.Message, shard_input_data: dict):
-    if not get_text_input("Enter Eruption Status (Erupted, No Eruption):", message, confirm_and_save_shard, shard_input_data, "Last Shard (UTC)"):
-        return
-
-def confirm_and_save_shard(message: telebot.types.Message, shard_input_data: dict):
-    """Confirms and saves the shard data to the database."""
-    if message.text.lower() == '/cancel':
-        bot.send_message(message.chat.id, "Shard data editing cancelled.")
+    session = user_shard_edit_sessions.get(user_id)
+    if not session:
+        bot.send_message(message.chat.id, "❌ No active editing session. Please start again.")
         send_admin_menu(message.chat.id)
         return
+
+    new_value = message.text.strip()
+    # Interpret 'N/A' or '-' as None (NULL in DB)
+    session["data"][field_name] = None if new_value.lower() in ('n/a', '-') else new_value
     
-    # Capture the last input which is Eruption Status
-    final_eruption_status_value = message.text.strip()
-    shard_input_data["Eruption Status"] = None if final_eruption_status_value.lower() in ('n/a', '-') else final_eruption_status_value
+    bot.send_message(message.chat.id, f"✅ **{field_name}** updated temporarily. Review changes below.", parse_mode='Markdown')
+    send_shard_edit_menu(message.chat.id, user_id, original_message_id) # Re-display menu with updated data
+
+@bot.callback_query_handler(func=lambda call: call.data == "save_shard_changes")
+def handle_save_shard_changes_callback(call: telebot.types.CallbackQuery):
+    """Saves all modified shard data to the database."""
+    update_last_interaction(call.from_user.id)
+    user_id = call.from_user.id
+    session = user_shard_edit_sessions.pop(user_id, None) # Remove session after attempting to save
+    
+    if not session:
+        bot.send_message(call.message.chat.id, "❌ No active editing session to save.")
+        send_admin_menu(call.message.chat.id)
+        bot.answer_callback_query(call.id)
+        return
+
+    shard_date = session["date"]
+    data_to_save = session["data"]
 
     try:
-        shard_date = shard_input_data["date"]
-        
-        # Prepare data for insertion/update
-        data_tuple = (
-            shard_input_data.get("Day of Week"),
-            shard_input_data.get("Shard Color"),
-            shard_input_data.get("Realm"),
-            shard_input_data.get("Location"),
-            shard_input_data.get("Reward"),
-            shard_input_data.get("Memory"),
-            shard_input_data.get("First Shard (UTC)"),
-            shard_input_data.get("Second Shard (UTC)"),
-            shard_input_data.get("Last Shard (UTC)"),
-            shard_input_data.get("Eruption Status"),
-            # The date itself will be the first param in VALUES and last in ON CONFLICT WHERE
+        # Prepare data for insertion/update (order must match SQL query)
+        params = (
+            shard_date, # Date comes first for the VALUES part
+            data_to_save.get("Day of Week"),
+            data_to_save.get("Shard Color"),
+            data_to_save.get("Realm"),
+            data_to_save.get("Location"),
+            data_to_save.get("Reward"),
+            data_to_save.get("Memory"),
+            data_to_save.get("First Shard (UTC)"),
+            data_to_save.get("Second Shard (UTC)"),
+            data_to_save.get("Last Shard (UTC)"),
+            data_to_save.get("Eruption Status")
         )
         
         with get_db() as conn:
             with conn.cursor() as cur:
-                # Use UPSERT (INSERT ON CONFLICT UPDATE)
                 cur.execute("""
                     INSERT INTO shard_events (
                         date, day_of_week, shard_color, realm, location, reward, memory,
@@ -1292,15 +1339,42 @@ def confirm_and_save_shard(message: telebot.types.Message, shard_input_data: dic
                         second_shard_utc = EXCLUDED.second_shard_utc,
                         last_shard_utc = EXCLUDED.last_shard_utc,
                         eruption_status = EXCLUDED.eruption_status
-                """, (shard_date,) + data_tuple) # shard_date is the first value, then data_tuple's elements
+                """, params)
                 conn.commit()
 
-        bot.send_message(message.chat.id, f"✅ Shard data for {shard_date.strftime('%Y-%m-%d')} successfully saved/updated!")
+        bot.edit_message_text(
+            chat_id=call.message.chat.id,
+            message_id=call.message.message_id,
+            text=f"✅ Shard data for {shard_date.strftime('%Y-%m-%d')} successfully saved/updated!",
+            parse_mode='Markdown'
+        )
     except Exception as e:
         logger.error(f"Error saving shard data: {e}", exc_info=True)
-        bot.send_message(message.chat.id, "⚠️ Failed to save shard data. Please check logs.")
+        bot.edit_message_text(
+            chat_id=call.message.chat.id,
+            message_id=call.message.message_id,
+            text="⚠️ Failed to save shard data. Please check logs.",
+            parse_mode='Markdown'
+        )
+    finally:
+        send_admin_menu(call.message.chat.id)
+        bot.answer_callback_query(call.id)
+
+@bot.callback_query_handler(func=lambda call: call.data == "cancel_shard_edit")
+def handle_cancel_shard_edit_callback(call: telebot.types.CallbackQuery):
+    """Cancels the shard editing session."""
+    update_last_interaction(call.from_user.id)
+    user_id = call.from_user.id
+    if user_id in user_shard_edit_sessions:
+        del user_shard_edit_sessions[user_id] # Remove session
     
-    send_admin_menu(message.chat.id)
+    bot.edit_message_text(
+        chat_id=call.message.chat.id,
+        message_id=call.message.message_id,
+        text="❌ Shard data editing cancelled. No changes saved."
+    )
+    send_admin_menu(call.message.chat.id)
+    bot.answer_callback_query(call.id)
 
 # Broadcast Messaging
 @bot.message_handler(func=lambda msg: msg.text == BROADCAST_BUTTON and is_admin(msg.from_user.id))
