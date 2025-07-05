@@ -1179,7 +1179,11 @@ def get_shard_date_to_edit_specific(message: telebot.types.Message):
             }
         }
         
-        send_shard_edit_menu(message.chat.id, message.from_user.id, message.message_id) # Pass message_id to edit the initial message
+        initial_message_text = f"Loading shard data for {shard_date_str}..." # Or similar
+        sent_message = bot.send_message(message.chat.id, initial_message_text)
+        
+        # Now pass the ID of the message *sent by the bot* for subsequent edits
+        send_shard_edit_menu(message.chat.id, message.from_user.id, sent_message.message_id)
 
     except ValueError:
         msg = bot.send_message(message.chat.id, "❌ Invalid date format. Please use `YYYY-MM-DD`. Try again:")
