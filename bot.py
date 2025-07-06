@@ -1,4 +1,4 @@
-# bot.py - Shard Eruption Status "no" gives specific message
+# bot.py - Shard events now display times in user's chosen format (12hr/24hr)
 
 import os
 import pytz
@@ -457,7 +457,8 @@ def settings_menu(message: telebot.types.Message):
 # New helper function to parse time ranges with 'n' for next day
 def parse_shard_time_range_mmt(
     time_range_str: str,
-    base_calendar_date: datetime.date
+    base_calendar_date: datetime.date,
+    format_style: str # New parameter for 12hr/24hr formatting
 ) -> tuple[datetime | None, datetime | None, str]:
     """
     Parses a shard time range string (e.g., "HH:MM:SS - HH:MM:SSn")
@@ -484,7 +485,7 @@ def parse_shard_time_range_mmt(
         end_str = end_str[:-1]
 
     try:
-        # Parse time objects
+        # Parse time objects (now expecting HH:MM:SS format)
         start_time_obj = datetime.strptime(start_str, "%H:%M:%S").time()
         end_time_obj = datetime.strptime(end_str, "%H:%M:%S").time()
 
@@ -499,24 +500,23 @@ def parse_shard_time_range_mmt(
                      end_time_obj.hour, end_time_obj.minute, end_time_obj.second)
         ) + timedelta(days=end_date_offset)
         
-        # Format for display: e.g., "Jul 5, 18:00 to Jul 6, 02:00"
-        # Simplify if both dates are the same (display HH:MM - HH:MM)
-        # If dates are different, display with month/day for both start and end
+        # Format for display: now using format_time with the user's chosen style
         if start_datetime_mmt.date() == end_datetime_mmt.date():
             display_range_str = (
-                f"{start_datetime_mmt.strftime('%b %d, %H:%M:%S')} - "
-                f"{end_datetime_mmt.strftime('%H:%M:%S')}"
+                f"{format_time(start_datetime_mmt, format_style)} - "
+                f"{format_time(end_datetime_mmt, format_style)} "
+                f"({start_datetime_mmt.strftime('%b %d')})" # Added date for clarity even on same day
             )
         else:
             display_range_str = (
-                f"{start_datetime_mmt.strftime('%b %d, %H:%M:%S')} to "
-                f"{end_datetime_mmt.strftime('%b %d, %H:%M:%S')}"
+                f"{format_time(start_datetime_mmt, format_style)} ({start_datetime_mmt.strftime('%b %d')}) to "
+                f"{format_time(end_datetime_mmt, format_style)} ({end_datetime_mmt.strftime('%b %d')})"
             )
 
         return start_datetime_mmt, end_datetime_mmt, display_range_str
 
     except ValueError:
-        logger.error(f"Error parsing time range string '{time_range_str}'", exc_info=True)
+        logger.error(f"Error parsing time range string '{time_range_str}'. Ensure HH:MM:SS format.", exc_info=True)
         return None, None, time_range_str # Return raw if parsing fails
 
 
@@ -533,7 +533,7 @@ def handle_shard_events(message: telebot.types.Message):
         bot.send_message(message.chat.id, "Please set your timezone first with /start")
         return
 
-    tz, _ = user_info
+    tz, fmt = user_info # Get user's time format here
     user_tz = pytz.timezone(tz)
     
     # Get current time in MMT
@@ -646,115 +646,111 @@ def display_shard_info(chat_id: int, user_id: int, query_calendar_date_for_sky_d
         bot.send_message(chat_id, "Please set your timezone first with /start")
         return
 
-    tz, fmt = user_info
+    tz, fmt = user_info # Get user's timezone and format here
     user_tz = pytz.timezone(tz)
     now_user_in_user_tz = datetime.now(user_tz) # Current time in user's display timezone
     now_in_mmt = datetime.now(MYANMAR_TIMEZONE) # Current time in MMT for comparison
 
-    # Determine the calendar dates to fetch data from based on the Sky Game Day window
-    fetch_start_date, fetch_end_date = get_sky_game_day_window_for_query_date(query_calendar_date_for_sky_day_start)
-    
-    # Get all shard data for these calendar dates (could be 1 or 2 rows from DB)
-    raw_shard_data_list = get_shard_data_for_sky_day_window(fetch_start_date, fetch_end_date)
-
-    # Define the precise start and end datetimes of the 'Sky Game Day' window in MMT
-    sky_day_start_datetime_mmt = MYANMAR_TIMEZONE.localize(
-        datetime(query_calendar_date_for_sky_day_start.year, query_calendar_date_for_sky_day_start.month, query_calendar_date_for_sky_day_start.day, SKY_DAILY_RESET_HOUR_MT, SKY_DAILY_RESET_MINUTE_MT, 0)
-    )
-    sky_day_end_datetime_mmt = sky_day_start_datetime_mmt + timedelta(days=1) - timedelta(seconds=1)
-
-    # Filter and sort shards that fall within this specific Sky Game Day window
-    relevant_shards_for_sky_day = []
-    for shard_data in raw_shard_data_list:
-        # Check for "yes" status explicitly (case-insensitive)
-        if shard_data.get("Eruption Status", '').lower() == "yes":
-            try:
-                # Construct datetime object for the shard's START time in MMT from its stored date and time
-                shard_event_calendar_date_obj = datetime.strptime(shard_data["Date"], "%Y-%m-%d").date() # Actual calendar date from DB
-                mt_time_range_str = shard_data.get("First Shard (MT)")
-                
-                shard_start_datetime_mt_full, _, _ = parse_shard_time_range_mmt(mt_time_range_str, shard_event_calendar_date_obj)
-
-                if shard_start_datetime_mt_full and sky_day_start_datetime_mmt <= shard_start_datetime_mt_full <= sky_day_end_datetime_mmt:
-                    relevant_shards_for_sky_day.append(shard_data)
-            except (ValueError, TypeError) as e:
-                logger.warning(f"Skipping malformed shard time for filter: {shard_data.get('First Shard (MT)')}. Error: {e}")
-
-    # Sort relevant shards by their full MMT start datetime
-    def get_sort_key(shard_data):
-        date_obj = datetime.strptime(shard_data["Date"], "%Y-%m-%d").date()
-        time_range_str = shard_data.get("First Shard (MT)")
-        start_datetime, _, _ = parse_shard_time_range_mmt(time_range_str, date_obj)
-        return start_datetime if start_datetime else datetime.min.replace(tzinfo=MYANMAR_TIMEZONE) # Fallback for sorting errors
-
-    relevant_shards_for_sky_day.sort(key=get_sort_key)
-
-
     message_text = ""
     message_text += f"💎 **Shard Eruptions for Sky Day starting {query_calendar_date_for_sky_day_start.strftime('%Y-%m-%d (%A)')} (1:30 PM MMT Reset):**\n\n"
 
-    # --- NEW LOGIC: Check explicit "no" eruption status for the main day ---
+    # --- Check explicit "no" eruption status for the main day ---
     primary_day_shard_data = get_shard_data_for_single_calendar_date(query_calendar_date_for_sky_day_start)
     if primary_day_shard_data and primary_day_shard_data.get("Eruption Status", '').lower() == "no":
         message_text += "There is no major shard eruption expected for this Sky Day."
-    elif relevant_shards_for_sky_day:
-        for shard_data in relevant_shards_for_sky_day:
-            shard_color = shard_data.get("Shard Color")
-            realm = shard_data.get("Realm")
-            location = shard_data.get("Location")
-            reward = shard_data.get("Reward")
-            memory = shard_data.get("Memory")
-            
-            # Use the actual shard's calendar date for its time display
-            shard_event_calendar_date_obj = datetime.strptime(shard_data["Date"], "%Y-%m-%d").date() 
-
-            shard_times_mt_raw = [
-                shard_data.get("First Shard (MT)"),
-                shard_data.get("Second Shard (MT)"),
-                shard_data.get("Last Shard (MT)")
-            ]
-            
-            times_display_parts = []
-            current_shard_start_datetime_mmt_for_status = None
-
-            for i, mt_time_range in enumerate(shard_times_mt_raw):
-                if mt_time_range is None:
-                    continue
-                
-                start_dt_mmt, end_dt_mmt, display_range_str = parse_shard_time_range_mmt(mt_time_range, shard_event_calendar_date_obj)
-                
-                if start_dt_mmt and end_dt_mmt:
-                    if i == 0: # Only use the first shard's start time for the overall status check
-                        current_shard_start_datetime_mmt_for_status = start_dt_mmt
-
-                    times_display_parts.append(f"• {display_range_str}")
-                else:
-                    times_display_parts.append(f"• {mt_time_range} ⚠️ (Format Error)")
-
-            status_emoji = ""
-            status_text = ""
-            if current_shard_start_datetime_mmt_for_status:
-                if current_shard_start_datetime_mmt_for_status < now_in_mmt:
-                    status_emoji = "✅"
-                    status_text = "Ended"
-                else:
-                    status_emoji = "⏳"
-                    status_text = "Upcoming"
-            else: # If no valid times, default to unknown status
-                status_emoji = "❓"
-                status_text = "Status Unknown"
-                
-            message_text += (
-                f"--- {shard_color if shard_color is not None else 'N/A'} Shard {status_emoji} ({status_text}) ---\n"
-                f"🗺️ Realm: {realm if realm is not None else 'N/A'}\n"
-                f"📍 Location: {location if location is not None else 'N/A'}\n"
-                f"🎁 Reward: {reward if reward is not None else 'N/A'}\n"
-                f"🧠 Memory: {memory if memory is not None else 'N/A'}\n"
-                f"⏰ Times (MT):\n" + "\n".join(times_display_parts) + "\n\n"
-            )
     else:
-        # Fallback for when primary_day_shard_data is None or not 'no', but no 'yes' shards found in window
-        message_text += "No major shard eruption expected or data not available for this Sky Day."
+        # Proceed with fetching and filtering if status is not explicitly "no"
+        fetch_start_date, fetch_end_date = get_sky_game_day_window_for_query_date(query_calendar_date_for_sky_day_start)
+        raw_shard_data_list = get_shard_data_for_sky_day_window(fetch_start_date, fetch_end_date)
+
+        sky_day_start_datetime_mmt = MYANMAR_TIMEZONE.localize(
+            datetime(query_calendar_date_for_sky_day_start.year, query_calendar_date_for_sky_day_start.month, query_calendar_date_for_sky_day_start.day, SKY_DAILY_RESET_HOUR_MT, SKY_DAILY_RESET_MINUTE_MT, 0)
+        )
+        sky_day_end_datetime_mmt = sky_day_start_datetime_mmt + timedelta(days=1) - timedelta(seconds=1)
+
+        relevant_shards_for_sky_day = []
+        for shard_data in raw_shard_data_list:
+            if shard_data.get("Eruption Status", '').lower() == "yes": # Only include "yes" shards
+                try:
+                    shard_event_calendar_date_obj = datetime.strptime(shard_data["Date"], "%Y-%m-%d").date()
+                    mt_time_range_str = shard_data.get("First Shard (MT)")
+                    
+                    # Pass the fmt parameter here
+                    shard_start_datetime_mt_full, _, _ = parse_shard_time_range_mmt(mt_time_range_str, shard_event_calendar_date_obj, fmt)
+
+                    if shard_start_datetime_mt_full and sky_day_start_datetime_mmt <= shard_start_datetime_mt_full <= sky_day_end_datetime_mmt:
+                        relevant_shards_for_sky_day.append(shard_data)
+                except (ValueError, TypeError) as e:
+                    logger.warning(f"Skipping malformed shard time for filter: {shard_data.get('First Shard (MT)')}. Error: {e}")
+
+        # Sort relevant shards by their full MMT start datetime
+        def get_sort_key(shard_data):
+            date_obj = datetime.strptime(shard_data["Date"], "%Y-%m-%d").date()
+            time_range_str = shard_data.get("First Shard (MT)")
+            start_datetime, _, _ = parse_shard_time_range_mmt(time_range_str, date_obj, fmt) # Pass fmt here for consistent sorting key generation
+            return start_datetime if start_datetime else datetime.min.replace(tzinfo=MYANMAR_TIMEZONE)
+
+        relevant_shards_for_sky_day.sort(key=get_sort_key)
+
+
+        if relevant_shards_for_sky_day:
+            for shard_data in relevant_shards_for_sky_day:
+                shard_color = shard_data.get("Shard Color")
+                realm = shard_data.get("Realm")
+                location = shard_data.get("Location")
+                reward = shard_data.get("Reward")
+                memory = shard_data.get("Memory")
+                
+                shard_event_calendar_date_obj = datetime.strptime(shard_data["Date"], "%Y-%m-%d").date() 
+
+                shard_times_mt_raw = [
+                    shard_data.get("First Shard (MT)"),
+                    shard_data.get("Second Shard (MT)"),
+                    shard_data.get("Last Shard (MT)")
+                ]
+                
+                times_display_parts = []
+                current_shard_start_datetime_mmt_for_status = None
+
+                for i, mt_time_range in enumerate(shard_times_mt_raw):
+                    if mt_time_range is None:
+                        continue
+                    
+                    # Pass fmt here for proper display string generation
+                    start_dt_mmt, end_dt_mmt, display_range_str = parse_shard_time_range_mmt(mt_time_range, shard_event_calendar_date_obj, fmt)
+                    
+                    if start_dt_mmt and end_dt_mmt:
+                        if i == 0: # Only use the first shard's start time for the overall status check
+                            current_shard_start_datetime_mmt_for_status = start_dt_mmt
+
+                        times_display_parts.append(f"• {display_range_str}")
+                    else:
+                        times_display_parts.append(f"• {mt_time_range} ⚠️ (Format Error)")
+
+                status_emoji = ""
+                status_text = ""
+                if current_shard_start_datetime_mmt_for_status:
+                    if current_shard_start_datetime_mmt_for_status < now_in_mmt:
+                        status_emoji = "✅"
+                        status_text = "Ended"
+                    else:
+                        status_emoji = "⏳"
+                        status_text = "Upcoming"
+                else: # If no valid times, default to unknown status
+                    status_emoji = "❓"
+                    status_text = "Status Unknown"
+                    
+                message_text += (
+                    f"--- {shard_color if shard_color is not None else 'N/A'} Shard {status_emoji} ({status_text}) ---\n"
+                    f"🗺️ Realm: {realm if realm is not None else 'N/A'}\n"
+                    f"📍 Location: {location if location is not None else 'N/A'}\n"
+                    f"🎁 Reward: {reward if reward is not None else 'N/A'}\n"
+                    f"🧠 Memory: {memory if memory is not None else 'N/A'}\n"
+                    f"⏰ Times (MT):\n" + "\n".join(times_display_parts) + "\n\n"
+                )
+        else:
+            # Fallback for when no 'yes' shards are found in window, and primary day status was not 'no'
+            message_text += "No major shard eruption expected or data not available for this Sky Day."
     
     message_text += "\n_Times shown are the start/end of the shard window in Myanmar Time._"
 
@@ -1575,7 +1571,7 @@ def broadcast_to_all(message: telebot.types.Message):
     # Updated prompt to include sending photos
     msg = bot.send_message(message.chat.id, "Enter message text or send a photo (with optional caption) to broadcast to ALL users. Type /cancel to abort:", reply_markup=telebot.types.ReplyKeyboardRemove())
     # Register next step handler to accept text and photo content types
-    bot.register_next_step_handler(msg, process_broadcast_all, content_types=['text', 'photo']) # Corrected: 'content_types' here is valid
+    bot.register_next_step_handler(msg, process_broadcast_all, content_types=['text', 'photo'])
 
 @bot.message_handler(func=lambda msg: msg.text == '👤 Send to Specific User' and is_admin(msg.from_user.id))
 def send_to_user(message: telebot.types.Message):
@@ -1599,7 +1595,7 @@ def get_target_user(message: telebot.types.Message):
         message.json['target_user_id'] = user_id # Using message.json to persist state
         msg = bot.send_message(message.chat.id, f"Enter message text or send a photo (with optional caption) for user {user_id}. Type /cancel to abort:")
         # Register next step handler to accept text and photo content types
-        bot.register_next_step_handler(msg, process_user_message, content_types=['text', 'photo']) # Corrected: 'content_types' here is valid
+        bot.register_next_step_handler(msg, process_user_message, content_types=['text', 'photo'])
 
     except ValueError:
         bot.send_message(message.chat.id, "❌ Invalid user ID. Must be a number. Try again:")
@@ -1662,7 +1658,6 @@ def process_user_message(message: telebot.types.Message):
 def process_broadcast_all(message: telebot.types.Message):
     """Sends a broadcast message to all users (text or photo)."""
     update_last_interaction(message.from_user.id)
-    # Check if the user sent a text message with '/cancel'
     if message.text and message.text.strip().lower() == '/cancel':
         send_admin_menu(message.chat.id)
         return
