@@ -1,4 +1,4 @@
-# bot.py - Shard Data times now stored in Myanmar Time (MT) and displayed based on Sky Game Day
+# bot.py - Shard Eruption Status now uses "yes" and "no"
 
 import os
 import pytz
@@ -666,7 +666,8 @@ def display_shard_info(chat_id: int, user_id: int, query_calendar_date_for_sky_d
     # Filter and sort shards that fall within this specific Sky Game Day window
     relevant_shards_for_sky_day = []
     for shard_data in raw_shard_data_list:
-        if shard_data.get("Eruption Status") == "Erupted":
+        # Check for "yes" status explicitly
+        if shard_data.get("Eruption Status", '').lower() == "yes": # Changed from "Erupted" to "yes"
             try:
                 # Construct datetime object for the shard's START time in MMT from its stored date and time
                 shard_event_calendar_date_obj = datetime.strptime(shard_data["Date"], "%Y-%m-%d").date() # Actual calendar date from DB
@@ -740,7 +741,7 @@ def display_shard_info(chat_id: int, user_id: int, query_calendar_date_for_sky_d
                 status_text = "Status Unknown"
                 
             message_text += (
-                f"--- {shard_color if shard_color is not None else 'N/A'} Shard {status_emoji} ({status_text}) ---\n" # Added status next to shard
+                f"--- {shard_color if shard_color is not None else 'N/A'} Shard {status_emoji} ({status_text}) ---\n"
                 f"🗺️ Realm: {realm if realm is not None else 'N/A'}\n"
                 f"📍 Location: {location if location is not None else 'N/A'}\n"
                 f"🎁 Reward: {reward if reward is not None else 'N/A'}\n"
@@ -1451,8 +1452,17 @@ def process_shard_field_update_input(message: telebot.types.Message, user_id: in
         return
 
     new_value = message.text.strip()
-    # Interpret 'N/A' or '-' as None (NULL in DB)
-    session["data"][field_name] = None if new_value.lower() in ('n/a', '-') else new_value
+    # Normalize Eruption Status input to lowercase "yes" or "no"
+    if field_name == "Eruption Status":
+        lower_value = new_value.lower()
+        if lower_value not in ('yes', 'no', 'n/a', '-'): # Add validation
+            bot.send_message(message.chat.id, "❌ Invalid Eruption Status. Please use 'yes' or 'no'.")
+            send_shard_edit_menu(message.chat.id, user_id, original_message_id)
+            return
+        session["data"][field_name] = None if lower_value in ('n/a', '-') else lower_value
+    else:
+        # Interpret 'N/A' or '-' as None (NULL in DB) for other fields
+        session["data"][field_name] = None if new_value.lower() in ('n/a', '-') else new_value
     
     bot.send_message(message.chat.id, f"✅ **{field_name}** updated temporarily. Review changes below.", parse_mode='Markdown')
     send_shard_edit_menu(message.chat.id, user_id, original_message_id) # Re-display menu with updated data
@@ -1482,9 +1492,9 @@ def handle_save_shard_changes_callback(call: telebot.types.CallbackQuery):
             data_to_save.get("Location"),
             data_to_save.get("Reward"),
             data_to_save.get("Memory"),
-            data_to_save.get("First Shard (MT)"), # Use new key
-            data_to_save.get("Second Shard (MT)"), # Use new key
-            data_to_save.get("Last Shard (MT)"), # Use new key
+            data_to_save.get("First Shard (MT)"),
+            data_to_save.get("Second Shard (MT)"),
+            data_to_save.get("Last Shard (MT)"),
             data_to_save.get("Eruption Status")
         )
         
