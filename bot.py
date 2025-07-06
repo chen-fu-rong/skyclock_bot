@@ -1,4 +1,4 @@
-# bot.py - Shard Eruption Status now uses "yes" and "no"
+# bot.py - Broadcast function now supports images
 
 import os
 import pytz
@@ -1567,42 +1567,67 @@ def start_broadcast(message: telebot.types.Message):
 def broadcast_to_all(message: telebot.types.Message):
     """Prompts for message to broadcast to all users."""
     update_last_interaction(message.from_user.id)
-    msg = bot.send_message(message.chat.id, "Enter message to broadcast to ALL users (type /cancel to abort):")
-    bot.register_next_step_handler(msg, process_broadcast_all)
+    # Updated prompt to include sending photos
+    msg = bot.send_message(message.chat.id, "Enter message text or send a photo (with optional caption) to broadcast to ALL users. Type /cancel to abort:", reply_markup=telebot.types.ReplyKeyboardRemove())
+    # Register next step handler to accept both text and photo content types
+    bot.register_next_step_handler(msg, process_broadcast_all, content_types=['text', 'photo'])
 
 @bot.message_handler(func=lambda msg: msg.text == '👤 Send to Specific User' and is_admin(msg.from_user.id))
 def send_to_user(message: telebot.types.Message):
     """Prompts for user ID to send a specific message."""
     update_last_interaction(message.from_user.id)
-    msg = bot.send_message(message.chat.id, "Enter target USER ID (type /cancel to abort):")
-    bot.register_next_step_handler(msg, get_target_user)
+    msg = bot.send_message(message.chat.id, "Enter target USER ID (type /cancel to abort):", reply_markup=telebot.types.ReplyKeyboardRemove())
+    bot.register_next_step_handler(msg, get_target_user, content_types=['text']) # User ID is text
 
 def get_target_user(message: telebot.types.Message):
     """Gets the target user ID for a specific message."""
     update_last_interaction(message.from_user.id)
-    if message.text.strip().lower() == '/cancel':
+    if message.text and message.text.strip().lower() == '/cancel':
         send_admin_menu(message.chat.id)
         return
         
     try:
         user_id = int(message.text.strip())
-        message.target_user_id = user_id # Store user ID in message object for next step
-        msg = bot.send_message(message.chat.id, f"Enter message for user {user_id}:")
-        bot.register_next_step_handler(msg, process_user_message)
+        # Store the target user ID in message.json to pass to the next handler
+        # This is not ideal as message.json is not standard, but simpler than a global dict for this case
+        message.json['target_user_id'] = user_id # Using message.json to persist state
+        msg = bot.send_message(message.chat.id, f"Enter message text or send a photo (with optional caption) for user {user_id}. Type /cancel to abort:")
+        bot.register_next_step_handler(msg, process_user_message, content_types=['text', 'photo']) # Accept text or photo
+
     except ValueError:
         bot.send_message(message.chat.id, "❌ Invalid user ID. Must be a number. Try again:")
-        bot.register_next_step_handler(msg, get_target_user)
+        bot.register_next_step_handler(message, get_target_user, content_types=['text'])
+
+# Helper function to send either text or photo
+def _perform_send_message_or_photo(target_chat_id: int, admin_message: telebot.types.Message) -> bool:
+    """Sends content from admin_message (photo or text) to target_chat_id."""
+    try:
+        if admin_message.photo:
+            file_id = admin_message.photo[-1].file_id # Get the largest photo size
+            caption = admin_message.caption # Can be None
+            bot.send_photo(target_chat_id, file_id, caption=caption, parse_mode='Markdown' if caption else None)
+        elif admin_message.text:
+            bot.send_message(target_chat_id, admin_message.text, parse_mode='Markdown')
+        else:
+            logger.warning(f"Admin sent unhandled content type for broadcast to {target_chat_id}: {admin_message.content_type}")
+            return False # Indicate failure
+
+        return True # Indicate success
+    except Exception as e:
+        logger.error(f"Failed to send broadcast part to {target_chat_id}: {e}", exc_info=True)
+        return False # Indicate failure
+
 
 def process_user_message(message: telebot.types.Message):
-    """Sends a message to a specific user."""
+    """Sends a message to a specific user (text or photo)."""
     update_last_interaction(message.from_user.id)
-    if message.text.strip().lower() == '/cancel':
+    if message.text and message.text.strip().lower() == '/cancel':
         send_admin_menu(message.chat.id)
         return
         
-    target_user_id = getattr(message, 'target_user_id', None)
+    target_user_id = message.json.get('target_user_id') # Retrieve target user ID
     if not target_user_id:
-        bot.send_message(message.chat.id, "❌ Error: User ID not found. Please start over.")
+        bot.send_message(message.chat.id, "❌ Error: Target user ID not found. Please start over.")
         return send_admin_menu(message.chat.id)
         
     try:
@@ -1612,29 +1637,27 @@ def process_user_message(message: telebot.types.Message):
                 result = cur.fetchone()
                 
                 if result:
-                    chat_id = result[0]
-                    try:
-                        bot.send_message(chat_id, f"📢 Admin Message:\n\n{message.text}")
-                        bot.send_message(message.chat.id, f"✅ Message sent to user {target_user_id}")
-                    except Exception as e:
-                        logger.error(f"Failed to send to user {target_user_id}: {str(e)}")
-                        bot.send_message(message.chat.id, f"❌ Failed to send to user {target_user_id}. They may have blocked the bot.")
+                    chat_id_to_send_to = result[0]
+                    if _perform_send_message_or_photo(chat_id_to_send_to, message):
+                        bot.send_message(message.chat.id, f"✅ Content sent to user {target_user_id}")
+                    else:
+                        bot.send_message(message.chat.id, f"❌ Failed to send content to user {target_user_id}. They may have blocked the bot or content type is invalid.")
                 else:
                     bot.send_message(message.chat.id, f"❌ User {target_user_id} not found in database")
     except Exception as e:
-        logger.error(f"Error sending to specific user: {str(e)}")
+        logger.error(f"Error sending to specific user: {str(e)}", exc_info=True)
         bot.send_message(message.chat.id, "❌ Error sending message. Please try again.")
     
     send_admin_menu(message.chat.id)
 
+
 def process_broadcast_all(message: telebot.types.Message):
-    """Sends a broadcast message to all users."""
+    """Sends a broadcast message to all users (text or photo)."""
     update_last_interaction(message.from_user.id)
-    if message.text.strip().lower() == '/cancel':
+    if message.text and message.text.strip().lower() == '/cancel':
         send_admin_menu(message.chat.id)
         return
         
-    broadcast_text = message.text
     with get_db() as conn:
         with conn.cursor() as cur:
             cur.execute("SELECT chat_id FROM users")
@@ -1648,11 +1671,9 @@ def process_broadcast_all(message: telebot.types.Message):
     
     for i in range(total):
         chat_id = chat_ids[i]
-        try:
-            bot.send_message(chat_id, f"📢 Admin Broadcast:\n\n{broadcast_text}")
+        if _perform_send_message_or_photo(chat_id, message):
             success += 1
-        except Exception as e:
-            logger.error(f"Broadcast failed for {chat_id}: {str(e)}")
+        else:
             failed += 1
             
         if (i + 1) % 10 == 0 or (i + 1) == total:
