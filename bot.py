@@ -1,4 +1,4 @@
-# bot.py - Shard Data times now stored in Myanmar Time (MT) and displayed based on Sky Game Day
+# bot.py - FIX: NameError for get_shard_data_for_date in admin editing
 
 import os
 import pytz
@@ -86,8 +86,6 @@ SAVE_SHARD_CHANGES_BUTTON = '💾 Save Changes'
 CANCEL_SHARD_EDIT_BUTTON = '❌ Cancel Edit'
 
 # Global dictionary to hold shard edit sessions for each admin user
-# IMPORTANT: This is in-memory and will reset if the bot restarts.
-# For production, consider using a database to store in-progress edit states.
 user_shard_edit_sessions = {}
 
 
@@ -117,7 +115,7 @@ def init_db():
                 logger.info("Creating table: users")
                 cur.execute("""
                 CREATE TABLE IF NOT EXISTS users (
-                    user_id BIGINT PRIMARY KEY,
+                    user_id BIGINT PRIMARY ID,
                     chat_id BIGINT NOT NULL,
                     timezone TEXT NOT NULL,
                     time_format TEXT DEFAULT '12hr',
@@ -158,7 +156,7 @@ def init_db():
                 logger.info("Ensuring default row exists in traveling_spirit")
                 cur.execute("INSERT INTO traveling_spirit (id) VALUES (1) ON CONFLICT (id) DO NOTHING;")
 
-                logger.info("Creating table: shard_events") # NEW TABLE FOR SHARD DATA
+                logger.info("Creating table: shard_events")
                 cur.execute("""
                 CREATE TABLE IF NOT EXISTS shard_events (
                     date DATE PRIMARY KEY,
@@ -167,9 +165,9 @@ def init_db():
                     location TEXT,
                     reward TEXT,
                     memory TEXT,
-                    first_shard_mt TEXT, -- Renamed to MT
-                    second_shard_mt TEXT, -- Renamed to MT
-                    last_shard_mt TEXT, -- Renamed to MT
+                    first_shard_mt TEXT,
+                    second_shard_mt TEXT,
+                    last_shard_mt TEXT,
                     eruption_status TEXT
                 );
                 """)
@@ -197,11 +195,8 @@ def scrape_traveling_spirit() -> dict:
 
         soup = BeautifulSoup(response.content, 'html.parser')
 
-        # --- FINAL DIAGNOSTIC STEP ---
-        # Log the first 2000 characters of the formatted HTML
         logger.info(f"DIAGNOSTIC HTML: {soup.prettify()[:2000]}")
 
-        # For the user, the function will always fail for now.
         return {"is_active": False}
 
     except Exception as e:
@@ -483,30 +478,13 @@ def get_sky_game_day_window_for_query_date(query_calendar_date: datetime.date) -
     """
     Determines the calendar date range that constitutes the 'Sky Game Day'
     based on a 1:30 PM MMT reset, relative to the query_calendar_date.
-    Returns (start_calendar_date_for_query, end_calendar_date_for_query) for DB query.
+    Returns (start_calendar_date_to_query, end_calendar_date_to_query) for DB query.
+    
+    A Sky Game Day for `query_calendar_date` is defined as:
+    from query_calendar_date 1:30 PM MMT to (query_calendar_date + 1 day) 1:29:59 PM MMT.
+    To ensure we fetch all shards for this window, we query for `query_calendar_date`
+    and `query_calendar_date + 1 day` from the database.
     """
-    # Create the reset time for the query_calendar_date in MMT
-    reset_time_on_query_date_mt = MYANMAR_TIMEZONE.localize(
-        datetime(query_calendar_date.year, query_calendar_date.month, query_calendar_date.day, SKY_DAILY_RESET_HOUR_MT, SKY_DAILY_RESET_MINUTE_MT, 0)
-    )
-
-    # Determine which calendar date the Sky Game Day *starts* on, relative to the query_calendar_date
-    # If the query_calendar_date is before the reset time on that date,
-    # then the current Sky Game Day started on the *previous* calendar day.
-    # Otherwise, it started on the query_calendar_date itself.
-
-    # Example: query_calendar_date is July 6 (00:00 AM MMT)
-    # reset_time_on_query_date_mt is July 6 1:30 PM MMT
-    # If a shard is at July 6, 2:00 AM MMT, it falls into the Sky Day that started on July 5, 1:30 PM MMT.
-    # So we need to query for calendar date July 5.
-
-    # Simpler: The "Sky Game Day" for a 'query_calendar_date' actually refers to the 24-hour cycle
-    # that *starts* at 1:30 PM MMT on `query_calendar_date` and extends into the next day.
-    # So we will query data for `query_calendar_date` and `query_calendar_date + 1 day`.
-    # The filtering for the actual "Sky Day" (1:30 PM to 1:29 PM) happens in display_shard_info.
-
-    # For the purposes of fetching data to cover a Sky Game Day starting on `query_calendar_date`,
-    # we need to query from `query_calendar_date` and `query_calendar_date + 1 day`.
     return query_calendar_date, query_calendar_date + timedelta(days=1)
 
 
@@ -548,10 +526,45 @@ def get_shard_data_for_sky_day_window(start_calendar_date: datetime.date, end_ca
         return []
 
 
+def get_shard_data_for_single_calendar_date(target_date: datetime.date) -> dict | None:
+    """
+    Fetches shard data for a specific single calendar date from the database.
+    Used by the admin editing flow.
+    """
+    try:
+        with get_db() as conn:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    SELECT shard_color, realm, location, reward, memory,
+                           first_shard_mt, second_shard_mt, last_shard_mt, eruption_status
+                    FROM shard_events
+                    WHERE date = %s
+                """, (target_date,))
+                row = cur.fetchone()
+                if row:
+                    return {
+                        "Date": target_date.strftime("%Y-%m-%d"),
+                        "Shard Color": row[0],
+                        "Realm": row[1],
+                        "Location": row[2],
+                        "Reward": row[3],
+                        "Memory": row[4],
+                        "First Shard (MT)": row[5],
+                        "Second Shard (MT)": row[6],
+                        "Last Shard (MT)": row[7],
+                        "Eruption Status": row[8]
+                    }
+                return None
+    except Exception as e:
+        logger.error(f"Error fetching shard data for single calendar date {target_date}: {e}", exc_info=True)
+        return None
+
+
 def display_shard_info(chat_id: int, user_id: int, query_calendar_date: datetime.date, message_id_to_edit: int | None = None):
     """
     Displays shard information for a specific 'Sky Game Day' based on query_calendar_date.
-    The Sky Game Day runs from 1:30 PM MMT on query_calendar_date to 1:29:59 PM MMT the next calendar day.
+    The Sky Game Day associated with query_calendar_date starts from 1:30 PM MMT on query_calendar_date
+    and runs until 1:29:59 PM MMT the next calendar day.
     """
     user_info = get_user(user_id)
     if not user_info:
@@ -561,41 +574,42 @@ def display_shard_info(chat_id: int, user_id: int, query_calendar_date: datetime
     tz, fmt = user_info
     user_tz = pytz.timezone(tz)
     now_user_in_user_tz = datetime.now(user_tz) # Current time in user's display timezone
+    now_in_mmt = datetime.now(MYANMAR_TIMEZONE) # Current time in MMT for comparison
 
     # Determine the calendar dates that make up the relevant Sky Game Day
-    # Example: If query_calendar_date is July 5, we fetch for July 5 and July 6
     fetch_start_date, fetch_end_date = get_sky_game_day_window_for_query_date(query_calendar_date)
     
     # Get all shard data for these calendar dates
     raw_shard_data_list = get_shard_data_for_sky_day_window(fetch_start_date, fetch_end_date)
 
     # Define the start and end of the 'Sky Game Day' window in MMT
-    sky_day_start_mt = MYANMAR_TIMEZONE.localize(
+    sky_day_start_datetime_mmt = MYANMAR_TIMEZONE.localize(
         datetime(query_calendar_date.year, query_calendar_date.month, query_calendar_date.day, SKY_DAILY_RESET_HOUR_MT, SKY_DAILY_RESET_MINUTE_MT, 0)
     )
-    sky_day_end_mt = sky_day_start_mt + timedelta(days=1) - timedelta(seconds=1) # Just before reset next day
+    sky_day_end_datetime_mmt = sky_day_start_datetime_mmt + timedelta(days=1) - timedelta(seconds=1)
 
     # Filter and sort shards that fall within this specific Sky Game Day window
     relevant_shards_for_sky_day = []
     for shard_data in raw_shard_data_list:
         if shard_data.get("Eruption Status") == "Erupted":
             try:
-                # Construct datetime object for the shard's START time in MMT
-                shard_date_obj = datetime.strptime(shard_data["Date"], "%Y-%m-%d").date() # Get the actual calendar date from DB record
+                # Construct datetime object for the shard's START time in MMT from its stored date and time
+                shard_event_calendar_date_obj = datetime.strptime(shard_data["Date"], "%Y-%m-%d").date() # Actual calendar date from DB
                 mt_time_str = shard_data.get("First Shard (MT)").split('-')[0].strip()
                 
-                shard_start_datetime_mt = MYANMAR_TIMEZONE.localize(
-                    datetime(shard_date_obj.year, shard_date_obj.month, shard_date_obj.day, 
+                shard_start_datetime_mt_full = MYANMAR_TIMEZONE.localize(
+                    datetime(shard_event_calendar_date_obj.year, shard_event_calendar_date_obj.month, shard_event_calendar_date_obj.day, 
                              int(mt_time_str.split(':')[0]), int(mt_time_str.split(':')[1]), 0)
                 )
 
-                # Check if this shard falls within the current Sky Game Day window
-                if sky_day_start_mt <= shard_start_datetime_mt <= sky_day_end_mt:
+                # Check if this shard's start time falls within the current Sky Game Day window
+                # This handles shards that started before/after the 1:30 PM cut-off
+                if sky_day_start_datetime_mmt <= shard_start_datetime_mt_full <= sky_day_end_datetime_mmt:
                     relevant_shards_for_sky_day.append(shard_data)
             except (ValueError, TypeError) as e:
                 logger.warning(f"Skipping malformed shard time for filter: {shard_data.get('First Shard (MT)')}. Error: {e}")
 
-    # Sort relevant shards by their start time
+    # Sort relevant shards by their full MMT start datetime
     def get_sort_key(shard_data):
         date_obj = datetime.strptime(shard_data["Date"], "%Y-%m-%d").date()
         time_str = shard_data.get("First Shard (MT)").split('-')[0].strip()
@@ -608,7 +622,7 @@ def display_shard_info(chat_id: int, user_id: int, query_calendar_date: datetime
 
 
     message_text = ""
-    message_text += f"💎 **Shard Eruptions for Sky Day starting {query_calendar_date.strftime('%Y-%m-%d (%A)')} (1:30 PM MMT):**\n\n"
+    message_text += f"💎 **Shard Eruptions for Sky Day starting {query_calendar_date.strftime('%Y-%m-%d (%A)')} (1:30 PM MMT Reset):**\n\n"
 
     if relevant_shards_for_sky_day:
         for shard_data in relevant_shards_for_sky_day:
@@ -619,23 +633,23 @@ def display_shard_info(chat_id: int, user_id: int, query_calendar_date: datetime
             memory = shard_data.get("Memory")
             
             # Use the actual shard's calendar date for its time display
-            shard_date_obj = datetime.strptime(shard_data["Date"], "%Y-%m-%d").date() 
+            shard_event_calendar_date_obj = datetime.strptime(shard_data["Date"], "%Y-%m-%d").date() 
             mt_time_range = shard_data.get("First Shard (MT)")
             mt_time_str = mt_time_range.split('-')[0].strip() # Get start time of range
 
             try:
-                # Localize shard time to MMT then convert to user's display TZ
-                shard_start_datetime_mt = MYANMAR_TIMEZONE.localize(
-                    datetime(shard_date_obj.year, shard_date_obj.month, shard_date_obj.day, 
+                # Construct the full MMT datetime for the shard
+                shard_start_datetime_mt_full = MYANMAR_TIMEZONE.localize(
+                    datetime(shard_event_calendar_date_obj.year, shard_event_calendar_date_obj.month, shard_event_calendar_date_obj.day, 
                              int(mt_time_str.split(':')[0]), int(mt_time_str.split(':')[1]), 0)
                 )
-                shard_start_datetime_user_display = shard_start_datetime_mt.astimezone(user_tz)
+                # Convert to user's local timezone for display
+                shard_start_datetime_user_display = shard_start_datetime_mt_full.astimezone(user_tz)
 
-                # Determine status relative to current time in MMT
-                now_in_mmt = datetime.now(MYANMAR_TIMEZONE)
                 status_emoji = ""
                 status_text = ""
-                if shard_start_datetime_mt < now_in_mmt:
+                # Compare shard time (full MT datetime) to current time in MMT
+                if shard_start_datetime_mt_full < now_in_mmt:
                     status_emoji = "✅"
                     status_text = "Ended"
                 else:
@@ -663,7 +677,7 @@ def display_shard_info(chat_id: int, user_id: int, query_calendar_date: datetime
     else:
         message_text += "No major shard eruption expected or data not available for this Sky Day."
     
-    message_text += "\n_Times shown are in Myanmar Time._"
+    message_text += "\n_Times shown are for the start of the shard window in Myanmar Time._"
 
     # Navigation buttons
     markup = telebot.types.InlineKeyboardMarkup()
@@ -949,7 +963,7 @@ def save_reminder(message: telebot.types.Message, event_type: str, selected_time
                     notify_before, is_daily, created_at
                 )
                 VALUES (%s, %s, %s, %s, %s, %s, %s, NOW())
-                RETURNING id
+                ECOMING id
                 """, (
                     message.from_user.id, chat_id, event_type, event_time_utc,
                     trigger_time, mins, is_daily
@@ -1242,10 +1256,9 @@ def get_shard_date_to_edit_specific(message: telebot.types.Message):
         shard_date_str = message.text.strip()
         shard_date = datetime.strptime(shard_date_str, "%Y-%m-%d").date()
         
-        existing_data = get_shard_data_for_date(shard_date)
+        existing_data = get_shard_data_for_single_calendar_date(shard_date) # USE THE SINGLE DATE FETCH
         
         # Initialize the session data for this admin user
-        # We store the date and a dictionary containing the current (or new) shard data
         user_shard_edit_sessions[message.from_user.id] = {
             "date": shard_date,
             "data": existing_data if existing_data else {
@@ -1586,7 +1599,7 @@ def manage_reminders(message: telebot.types.Message):
     with get_db() as conn:
         with conn.cursor() as cur:
             cur.execute("""
-                SELECT r.id, u.user_id, r.event_type, r.event_time_utc, r.notify_before
+                SELECT id, user_id, event_type, event_time_utc, notify_before
                 FROM reminders r
                 JOIN users u ON r.user_id = u.user_id
                 WHERE r.event_time_utc > NOW()
