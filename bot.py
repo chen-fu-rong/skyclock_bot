@@ -1,4 +1,4 @@
-# bot.py - Broadcast function now supports images
+# bot.py - FIX: Removed content_types from register_next_step_handler
 
 import os
 import pytz
@@ -666,8 +666,8 @@ def display_shard_info(chat_id: int, user_id: int, query_calendar_date_for_sky_d
     # Filter and sort shards that fall within this specific Sky Game Day window
     relevant_shards_for_sky_day = []
     for shard_data in raw_shard_data_list:
-        # Check for "yes" status explicitly
-        if shard_data.get("Eruption Status", '').lower() == "yes": # Changed from "Erupted" to "yes"
+        # Check for "yes" status explicitly (case-insensitive)
+        if shard_data.get("Eruption Status", '').lower() == "yes":
             try:
                 # Construct datetime object for the shard's START time in MMT from its stored date and time
                 shard_event_calendar_date_obj = datetime.strptime(shard_data["Date"], "%Y-%m-%d").date() # Actual calendar date from DB
@@ -1569,15 +1569,16 @@ def broadcast_to_all(message: telebot.types.Message):
     update_last_interaction(message.from_user.id)
     # Updated prompt to include sending photos
     msg = bot.send_message(message.chat.id, "Enter message text or send a photo (with optional caption) to broadcast to ALL users. Type /cancel to abort:", reply_markup=telebot.types.ReplyKeyboardRemove())
-    # Register next step handler to accept both text and photo content types
-    bot.register_next_step_handler(msg, process_broadcast_all, content_types=['text', 'photo'])
+    # Removed content_types from here - the handler function (process_broadcast_all) will check content_type
+    bot.register_next_step_handler(msg, process_broadcast_all)
 
 @bot.message_handler(func=lambda msg: msg.text == '👤 Send to Specific User' and is_admin(msg.from_user.id))
 def send_to_user(message: telebot.types.Message):
     """Prompts for user ID to send a specific message."""
     update_last_interaction(message.from_user.id)
     msg = bot.send_message(message.chat.id, "Enter target USER ID (type /cancel to abort):", reply_markup=telebot.types.ReplyKeyboardRemove())
-    bot.register_next_step_handler(msg, get_target_user, content_types=['text']) # User ID is text
+    # Removed content_types from here
+    bot.register_next_step_handler(msg, get_target_user)
 
 def get_target_user(message: telebot.types.Message):
     """Gets the target user ID for a specific message."""
@@ -1592,11 +1593,12 @@ def get_target_user(message: telebot.types.Message):
         # This is not ideal as message.json is not standard, but simpler than a global dict for this case
         message.json['target_user_id'] = user_id # Using message.json to persist state
         msg = bot.send_message(message.chat.id, f"Enter message text or send a photo (with optional caption) for user {user_id}. Type /cancel to abort:")
-        bot.register_next_step_handler(msg, process_user_message, content_types=['text', 'photo']) # Accept text or photo
+        # Removed content_types from here
+        bot.register_next_step_handler(msg, process_user_message)
 
     except ValueError:
         bot.send_message(message.chat.id, "❌ Invalid user ID. Must be a number. Try again:")
-        bot.register_next_step_handler(message, get_target_user, content_types=['text'])
+        bot.register_next_step_handler(message, get_target_user) # Keep content_types for getting user ID as text is expected
 
 # Helper function to send either text or photo
 def _perform_send_message_or_photo(target_chat_id: int, admin_message: telebot.types.Message) -> bool:
