@@ -115,13 +115,15 @@ def init_db():
                 logger.info("Creating table: users")
                 cur.execute("""
                 CREATE TABLE IF NOT EXISTS users (
-                    user_id BIGINT PRIMARY ID,
+                    user_id BIGINT PRIMARY KEY,
                     chat_id BIGINT NOT NULL,
                     timezone TEXT NOT NULL,
                     time_format TEXT DEFAULT '12hr',
                     last_interaction TIMESTAMP DEFAULT NOW()
                 );
                 """)
+
+                
 
                 logger.info("Creating table: reminders")
                 cur.execute("""
