@@ -1,4 +1,4 @@
-# bot.py - Improved Telegram API error handling for graceful operation
+# bot.py - Updated to use new database schema for shard_events (separate time, reward_amount/type)
 
 import os
 import pytz
@@ -77,8 +77,8 @@ ONE_TIME_REMINDER_BUTTON = '⏰ One Time Reminder'
 DAILY_REMINDER_BUTTON = '🔄 Daily Reminder'
 
 # Shard Navigation Buttons
-PREVIOUS_DAY_BUTTON = '◀️ Previous Sky Day' # Updated text
-NEXT_DAY_BUTTON = '▶️ Next Sky Day' # Updated text
+PREVIOUS_DAY_BUTTON = '◀️ Previous Sky Day'
+NEXT_DAY_BUTTON = '▶️ Next Sky Day'
 
 # Admin Shard Editing Buttons
 EDIT_SHARDS_BUTTON = '📝 Edit Shards'
@@ -156,19 +156,23 @@ def init_db():
                 logger.info("Ensuring default row exists in traveling_spirit")
                 cur.execute("INSERT INTO traveling_spirit (id) VALUES (1) ON CONFLICT (id) DO NOTHING;")
 
-                logger.info("Creating table: shard_events") # NEW TABLE FOR SHARD DATA
+                logger.info("Creating table: shard_events (NEW SCHEMA)") # Updated table creation for new schema
                 cur.execute("""
                 CREATE TABLE IF NOT EXISTS shard_events (
                     date DATE PRIMARY KEY,
+                    eruption_status BOOLEAN,
                     shard_color TEXT,
                     realm TEXT,
                     location TEXT,
-                    reward TEXT,
+                    reward_amount FLOAT,
+                    reward_type TEXT,
                     memory TEXT,
-                    first_shard_mt TEXT, -- Renamed to MT
-                    second_shard_mt TEXT, -- Renamed to MT
-                    last_shard_mt TEXT, -- Renamed to MT
-                    eruption_status TEXT
+                    first_shard_start_mt TEXT,
+                    first_shard_end_mt TEXT,
+                    second_shard_start_mt TEXT,
+                    second_shard_end_mt TEXT,
+                    last_shard_start_mt TEXT,
+                    last_shard_end_mt TEXT
                 );
                 """)
                 
@@ -454,6 +458,17 @@ def settings_menu(message: telebot.types.Message):
 
 # --- SHARD EVENTS IMPLEMENTATION ---
 
+# Helper to reconstruct the HH:MM:SS - HH:MM:SSn string for parsing in bot
+def _reconstruct_time_range_string(start_time_str: str, end_time_str: str) -> str:
+    try:
+        start_time_obj = datetime.strptime(start_time_str, "%H:%M:%S").time()
+        end_time_obj = datetime.strptime(end_time_str, "%H:%M:%S").time()
+        n_suffix = "n" if end_time_obj < start_time_obj else ""
+        return f"{start_time_str} - {end_time_str}{n_suffix}"
+    except (ValueError, TypeError):
+        return f"{start_time_str} - {end_time_str}" # Fallback if times are malformed
+
+
 # New helper function to parse time ranges with 'n' for next day
 def parse_shard_time_range_mmt(
     time_range_str: str,
@@ -500,12 +515,13 @@ def parse_shard_time_range_mmt(
                      end_time_obj.hour, end_time_obj.minute, end_time_obj.second)
         ) + timedelta(days=end_date_offset)
         
-        # Format for display: now using format_time with the user's chosen style
+        # Format for display: now using format_time with the user's chosen style (HH:MM)
+        # and adding date only if days are different
         if start_datetime_mmt.date() == end_datetime_mmt.date():
             display_range_str = (
                 f"{format_time(start_datetime_mmt, format_style)} - "
                 f"{format_time(end_datetime_mmt, format_style)} "
-                f"({start_datetime_mmt.strftime('%b %d')})" # Added date for clarity even on same day
+                f"({start_datetime_mmt.strftime('%b %d')})"
             )
         else:
             display_range_str = (
@@ -566,34 +582,42 @@ def get_sky_game_day_window_for_query_date(query_calendar_date: datetime.date) -
 def get_shard_data_for_sky_day_window(start_calendar_date: datetime.date, end_calendar_date: datetime.date) -> list[dict]:
     """
     Fetches shard data for a range of calendar dates from the database.
-    Returns a list of shard data dictionaries.
+    Returns a list of shard data dictionaries, reconstructing time range strings with 'n'.
     """
     all_shard_data_in_window = []
     try:
         with get_db() as conn:
             with conn.cursor() as cur:
-                # Fetch data for both calendar dates that might comprise a Sky Game Day
                 cur.execute("""
-                    SELECT date, shard_color, realm, location, reward, memory,
-                           first_shard_mt, second_shard_mt, last_shard_mt, eruption_status
+                    SELECT date, eruption_status, shard_color, realm, location, 
+                           reward_amount, reward_type, memory, 
+                           first_shard_start_mt, first_shard_end_mt, 
+                           second_shard_start_mt, second_shard_end_mt, 
+                           last_shard_start_mt, last_shard_end_mt
                     FROM shard_events
                     WHERE date BETWEEN %s AND %s
-                    ORDER BY date, first_shard_mt -- Order by date and then time to process correctly
+                    ORDER BY date, first_shard_start_mt -- Order by date and then start time
                 """, (start_calendar_date, end_calendar_date))
                 
                 rows = cur.fetchall()
                 for row in rows:
+                    # Reconstruct the "HH:MM:SS - HH:MM:SSn" format for times
+                    first_shard_range = _reconstruct_time_range_string(row[8], row[9])
+                    second_shard_range = _reconstruct_time_range_string(row[10], row[11])
+                    last_shard_range = _reconstruct_time_range_string(row[12], row[13])
+
                     all_shard_data_in_window.append({
-                        "Date": row[0].strftime("%Y-%m-%d"), # date object needs formatting
-                        "Shard Color": row[1],
-                        "Realm": row[2],
-                        "Location": row[3],
-                        "Reward": row[4],
-                        "Memory": row[5],
-                        "First Shard (MT)": row[6],
-                        "Second Shard (MT)": row[7],
-                        "Last Shard (MT)": row[8],
-                        "Eruption Status": row[9]
+                        "Date": row[0].strftime("%Y-%m-%d"),
+                        "Eruption Status": "yes" if row[1] else "no", # Convert BOOLEAN to "yes"/"no" string
+                        "Shard Color": row[2],
+                        "Realm": row[3],
+                        "Location": row[4],
+                        "Reward Amount": row[5], # Keep as amount
+                        "Reward Type": row[6],   # Keep as type
+                        "Memory": row[7],
+                        "First Shard (MT)": first_shard_range,  # Reconstructed range
+                        "Second Shard (MT)": second_shard_range, # Reconstructed range
+                        "Last Shard (MT)": last_shard_range     # Reconstructed range
                     })
         return all_shard_data_in_window
     except Exception as e:
@@ -604,30 +628,39 @@ def get_shard_data_for_sky_day_window(start_calendar_date: datetime.date, end_ca
 def get_shard_data_for_single_calendar_date(target_date: datetime.date) -> dict | None:
     """
     Fetches shard data for a specific single calendar date from the database.
-    Used by the admin editing flow.
+    Used by the admin editing flow. Reconstructs time ranges with 'n'.
     """
     try:
         with get_db() as conn:
             with conn.cursor() as cur:
                 cur.execute("""
-                    SELECT shard_color, realm, location, reward, memory,
-                           first_shard_mt, second_shard_mt, last_shard_mt, eruption_status
+                    SELECT eruption_status, shard_color, realm, location, 
+                           reward_amount, reward_type, memory,
+                           first_shard_start_mt, first_shard_end_mt, 
+                           second_shard_start_mt, second_shard_end_mt, 
+                           last_shard_start_mt, last_shard_end_mt
                     FROM shard_events
                     WHERE date = %s
                 """, (target_date,))
                 row = cur.fetchone()
                 if row:
+                    # Reconstruct the "HH:MM:SS - HH:MM:SSn" format for times
+                    first_shard_range = _reconstruct_time_range_string(row[7], row[8])
+                    second_shard_range = _reconstruct_time_range_string(row[9], row[10])
+                    last_shard_range = _reconstruct_time_range_string(row[11], row[12])
+
                     return {
                         "Date": target_date.strftime("%Y-%m-%d"),
-                        "Shard Color": row[0],
-                        "Realm": row[1],
-                        "Location": row[2],
-                        "Reward": row[3],
-                        "Memory": row[4],
-                        "First Shard (MT)": row[5],
-                        "Second Shard (MT)": row[6],
-                        "Last Shard (MT)": row[7],
-                        "Eruption Status": row[8]
+                        "Eruption Status": "yes" if row[0] else "no", # Convert BOOLEAN to "yes"/"no" string
+                        "Shard Color": row[1],
+                        "Realm": row[2],
+                        "Location": row[3],
+                        "Reward Amount": row[4],
+                        "Reward Type": row[5],
+                        "Memory": row[6],
+                        "First Shard (MT)": first_shard_range,
+                        "Second Shard (MT)": second_shard_range,
+                        "Last Shard (MT)": last_shard_range
                     }
                 return None
     except Exception as e:
@@ -654,21 +687,27 @@ def display_shard_info(chat_id: int, user_id: int, query_calendar_date_for_sky_d
     message_text = ""
     message_text += f"💎 **Shard Eruptions for Sky Day starting {query_calendar_date_for_sky_day_start.strftime('%Y-%m-%d (%A)')} (1:30 PM MMT Reset):**\n\n"
 
-    # --- Check explicit "no" eruption status for the main day ---
-    primary_day_shard_data = get_shard_data_for_single_calendar_date(query_calendar_date_for_sky_day_start)
-    if primary_day_shard_data and primary_day_shard_data.get("Eruption Status", '').lower() == "no":
+    # --- Fetch all relevant shards for the Sky Day window ---
+    fetch_start_date, fetch_end_date = get_sky_game_day_window_for_query_date(query_calendar_date_for_sky_day_start)
+    raw_shard_data_list = get_shard_data_for_sky_day_window(fetch_start_date, fetch_end_date)
+
+    # Define the precise start and end datetimes of the 'Sky Game Day' window in MMT
+    sky_day_start_datetime_mmt = MYANMAR_TIMEZONE.localize(
+        datetime(query_calendar_date_for_sky_day_start.year, query_calendar_date_for_sky_day_start.month, query_calendar_date_for_sky_day_start.day, SKY_DAILY_RESET_HOUR_MT, SKY_DAILY_RESET_MINUTE_MT, 0)
+    )
+    sky_day_end_datetime_mmt = sky_day_start_datetime_mmt + timedelta(days=1) - timedelta(seconds=1)
+
+    # Filter and sort shards that fall within this specific Sky Game Day window
+    relevant_shards_for_sky_day = []
+    
+    # Check if the primary day (query_calendar_date_for_sky_day_start) itself has an explicit "no" eruption status
+    primary_day_shard_data_raw = get_shard_data_for_single_calendar_date(query_calendar_date_for_sky_day_start)
+    
+    if primary_day_shard_data_raw and primary_day_shard_data_raw.get("Eruption Status", '').lower() == "no":
         message_text += "There is no major shard eruption expected for this Sky Day."
-    else:
-        # Proceed with fetching and filtering if status is not explicitly "no"
-        fetch_start_date, fetch_end_date = get_sky_game_day_window_for_query_date(query_calendar_date_for_sky_day_start)
-        raw_shard_data_list = get_shard_data_for_sky_day_window(fetch_start_date, fetch_end_date)
-
-        sky_day_start_datetime_mmt = MYANMAR_TIMEZONE.localize(
-            datetime(query_calendar_date_for_sky_day_start.year, query_calendar_date_for_sky_day_start.month, query_calendar_date_for_sky_day_start.day, SKY_DAILY_RESET_HOUR_MT, SKY_DAILY_RESET_MINUTE_MT, 0)
-        )
-        sky_day_end_datetime_mmt = sky_day_start_datetime_mmt + timedelta(days=1) - timedelta(seconds=1)
-
-        relevant_shards_for_sky_day = []
+    elif not raw_shard_data_list: # No data for any day in the window (could be None day, or missing data)
+         message_text += "No major shard eruption expected or data not available for this Sky Day."
+    else: # Process shards found in the window
         for shard_data in raw_shard_data_list:
             if shard_data.get("Eruption Status", '').lower() == "yes": # Only include "yes" shards
                 try:
@@ -687,9 +726,9 @@ def display_shard_info(chat_id: int, user_id: int, query_calendar_date_for_sky_d
         def get_sort_key(shard_data):
             date_obj = datetime.strptime(shard_data["Date"], "%Y-%m-%d").date()
             time_range_str = shard_data.get("First Shard (MT)")
-            # Pass fmt here for consistent sorting key generation
-            start_datetime, _, _ = parse_shard_time_range_mmt(time_range_str, date_obj, fmt) 
-            return start_datetime if start_datetime else datetime.min.replace(tzinfo=MYANMAR_TIMEZONE) # Fallback for sorting errors
+            # Pass fmt here for consistent sorting key generation (only need the datetime object, not display)
+            start_datetime, _, _ = parse_shard_time_range_mmt(time_range_str, date_obj, '24hr') 
+            return start_datetime if start_datetime else datetime.min.replace(tzinfo=MYANMAR_TIMEZONE)
 
         relevant_shards_for_sky_day.sort(key=get_sort_key)
 
@@ -699,9 +738,17 @@ def display_shard_info(chat_id: int, user_id: int, query_calendar_date_for_sky_d
                 shard_color = shard_data.get("Shard Color")
                 realm = shard_data.get("Realm")
                 location = shard_data.get("Location")
-                reward = shard_data.get("Reward")
+                reward_amount = shard_data.get("Reward Amount")
+                reward_type = shard_data.get("Reward Type")
                 memory = shard_data.get("Memory")
                 
+                # Combine reward amount and type for display
+                display_reward = f"{reward_amount} {reward_type}" if reward_amount is not None and reward_type is not None else "N/A"
+                if reward_amount is None and reward_type is not None:
+                     display_reward = reward_type # Just type if no amount
+                elif reward_amount is not None and reward_type is None:
+                    display_reward = str(reward_amount) # Just amount if no type
+
                 shard_event_calendar_date_obj = datetime.strptime(shard_data["Date"], "%Y-%m-%d").date() 
 
                 shard_times_mt_raw = [
@@ -742,10 +789,10 @@ def display_shard_info(chat_id: int, user_id: int, query_calendar_date_for_sky_d
                     status_text = "Status Unknown"
                     
                 message_text += (
-                    f"--- {shard_color if shard_color is not None else 'N/A'} Shard {status_emoji} ({status_text}) ---\n"
+                    f"--- {shard_color if shard_color is not None else 'Unknown'} Shard {status_emoji} ({status_text}) ---\n"
                     f"🗺️ Realm: {realm if realm is not None else 'N/A'}\n"
                     f"📍 Location: {location if location is not None else 'N/A'}\n"
-                    f"🎁 Reward: {reward if reward is not None else 'N/A'}\n"
+                    f"🎁 Reward: {display_reward}\n"
                     f"🧠 Memory: {memory if memory is not None else 'N/A'}\n"
                     f"⏰ Times (MT):\n" + "\n".join(times_display_parts) + "\n\n"
                 )
@@ -1340,8 +1387,8 @@ def get_shard_date_to_edit_specific(message: telebot.types.Message):
             "data": existing_data if existing_data else {
                 "Date": shard_date.strftime("%Y-%m-%d"), # Ensure date is explicitly in data
                 "Shard Color": None, "Realm": None, "Location": None,
-                "Reward": None, "Memory": None,
-                "First Shard (MT)": None, "Second Shard (MT)": None, "Last Shard (MT)": None,
+                "Reward Amount": None, "Reward Type": None, "Memory": None, # New columns
+                "First Shard (MT)": None, "Second Shard (MT)": None, "Last Shard (MT)": None, # Combined range strings
                 "Eruption Status": None
             }
         }
@@ -1376,8 +1423,29 @@ def send_shard_edit_menu(chat_id: int, user_id: int, message_id_to_edit: int | N
     # Display current values (excluding 'Date' as it's in the header)
     for key, value in current_shard_data.items():
         if key == "Date": continue
-        message_text += f"**{key.replace('(MT)', '').strip()}:** {value if value is not None else 'N/A'}\n"
-    
+        # Handle Reward display specially
+        if key == "Reward Amount": continue # Show combined reward
+        if key == "Reward Type": continue # Show combined reward
+        if key == "First Shard (MT)" or key == "Second Shard (MT)" or key == "Last Shard (MT)":
+            # Display these as ranges without the (MT) from the key itself
+            message_text += f"**{key.replace('(MT)', '').strip()}:** {value if value is not None else 'N/A'}\n"
+        elif key == "Eruption Status":
+            # Convert True/False to "yes"/"no" for display
+            display_value = "yes" if value is True else ("no" if value is False else "N/A")
+            message_text += f"**{key}:** {display_value}\n"
+        else:
+            message_text += f"**{key}:** {value if value is not None else 'N/A'}\n"
+            
+    # Add combined reward line
+    combined_reward = "N/A"
+    if current_shard_data.get("Reward Amount") is not None and current_shard_data.get("Reward Type") is not None:
+        combined_reward = f"{current_shard_data['Reward Amount']} {current_shard_data['Reward Type']}"
+    elif current_shard_data.get("Reward Amount") is not None:
+        combined_reward = str(current_shard_data['Reward Amount'])
+    elif current_shard_data.get("Reward Type") is not None:
+        combined_reward = current_shard_data['Reward Type']
+    message_text += f"**Reward (Combined):** {combined_reward}\n"
+
     markup = telebot.types.InlineKeyboardMarkup(row_width=2)
     
     # Buttons for each editable field
@@ -1385,11 +1453,15 @@ def send_shard_edit_menu(chat_id: int, user_id: int, message_id_to_edit: int | N
         telebot.types.InlineKeyboardButton("Edit Shard Color", callback_data=f"edit_shard_field_Shard Color"),
         telebot.types.InlineKeyboardButton("Edit Realm", callback_data=f"edit_shard_field_Realm"),
         telebot.types.InlineKeyboardButton("Edit Location", callback_data=f"edit_shard_field_Location"),
-        telebot.types.InlineKeyboardButton("Edit Reward", callback_data=f"edit_shard_field_Reward"),
+        telebot.types.InlineKeyboardButton("Edit Reward Amount", callback_data=f"edit_shard_field_Reward Amount"), # New
+        telebot.types.InlineKeyboardButton("Edit Reward Type", callback_data=f"edit_shard_field_Reward Type"), # New
         telebot.types.InlineKeyboardButton("Edit Memory", callback_data=f"edit_shard_field_Memory"),
-        telebot.types.InlineKeyboardButton("Edit First Shard (MT)", callback_data=f"edit_shard_field_First Shard (MT)"),
-        telebot.types.InlineKeyboardButton("Edit Second Shard (MT)", callback_data=f"edit_shard_field_Second Shard (MT)"),
-        telebot.types.InlineKeyboardButton("Edit Last Shard (MT)", callback_data=f"edit_shard_field_Last Shard (MT)"),
+        telebot.types.InlineKeyboardButton("Edit First Start (MT)", callback_data=f"edit_shard_field_first_shard_start_mt"), # New direct column names
+        telebot.types.InlineKeyboardButton("Edit First End (MT)", callback_data=f"edit_shard_field_first_shard_end_mt"),   # New direct column names
+        telebot.types.InlineKeyboardButton("Edit Second Start (MT)", callback_data=f"edit_shard_field_second_shard_start_mt"),
+        telebot.types.InlineKeyboardButton("Edit Second End (MT)", callback_data=f"edit_shard_field_second_shard_end_mt"),
+        telebot.types.InlineKeyboardButton("Edit Last Start (MT)", callback_data=f"edit_shard_field_last_shard_start_mt"),
+        telebot.types.InlineKeyboardButton("Edit Last End (MT)", callback_data=f"edit_shard_field_last_shard_end_mt"),
         telebot.types.InlineKeyboardButton("Edit Eruption Status", callback_data=f"edit_shard_field_Eruption Status")
     )
     
@@ -1430,8 +1502,16 @@ def handle_edit_shard_field_callback(call: telebot.types.CallbackQuery):
         bot.answer_callback_query(call.id)
         return
 
-    # Prompt for the new value for the selected field
-    msg = bot.send_message(call.message.chat.id, f"Enter new value for **{field_name}** (Type 'N/A' or '-' to clear, /cancel to abort edit):", parse_mode='Markdown')
+    # Special prompts for specific fields
+    prompt_text = f"Enter new value for **{field_name}** (Type 'N/A' or '-' to clear, /cancel to abort edit):"
+    if field_name == "Eruption Status":
+        prompt_text = "Enter new Eruption Status (True/False):"
+    elif field_name == "Reward Amount":
+        prompt_text = "Enter new Reward Amount (e.g., 200.0, 3.5, N/A):"
+    elif "start_mt" in field_name or "end_mt" in field_name:
+        prompt_text = f"Enter new {field_name} (HH:MM:SS, e.g., 09:30:00, N/A):"
+
+    msg = bot.send_message(call.message.chat.id, prompt_text, parse_mode='Markdown')
     
     # Register the next step to process this specific field's input
     bot.register_next_step_handler(msg, process_shard_field_update_input, user_id, field_name, call.message.message_id)
@@ -1454,17 +1534,31 @@ def process_shard_field_update_input(message: telebot.types.Message, user_id: in
         return
 
     new_value = message.text.strip()
-    # Normalize Eruption Status input to lowercase "yes" or "no"
+    # Handle 'N/A' or '-' as None (NULL in DB)
+    processed_value = None if new_value.lower() in ('n/a', '-') else new_value
+
+    # --- Special handling for specific fields ---
     if field_name == "Eruption Status":
-        lower_value = new_value.lower()
-        if lower_value not in ('yes', 'no', 'n/a', '-'): # Add validation
-            bot.send_message(message.chat.id, "❌ Invalid Eruption Status. Please use 'yes' or 'no'.")
-            send_shard_edit_menu(message.chat.id, user_id, original_message_id)
-            return
-        session["data"][field_name] = None if lower_value in ('n/a', '-') else lower_value
+        if processed_value is not None:
+            lower_value = str(processed_value).lower()
+            if lower_value == 'true': processed_value = True
+            elif lower_value == 'false': processed_value = False
+            else:
+                bot.send_message(message.chat.id, "❌ Invalid Eruption Status. Please use 'True' or 'False'.")
+                send_shard_edit_menu(message.chat.id, user_id, original_message_id)
+                return
+        session["data"][field_name] = processed_value
+    elif field_name == "Reward Amount":
+        if processed_value is not None:
+            try:
+                processed_value = float(processed_value)
+            except ValueError:
+                bot.send_message(message.chat.id, "❌ Invalid Reward Amount. Please enter a number (e.g., 200.0, 3.5).")
+                send_shard_edit_menu(message.chat.id, user_id, original_message_id)
+                return
+        session["data"][field_name] = processed_value
     else:
-        # Interpret 'N/A' or '-' as None (NULL in DB) for other fields
-        session["data"][field_name] = None if new_value.lower() in ('n/a', '-') else new_value
+        session["data"][field_name] = processed_value
     
     bot.send_message(message.chat.id, f"✅ **{field_name}** updated temporarily. Review changes below.", parse_mode='Markdown')
     send_shard_edit_menu(message.chat.id, user_id, original_message_id) # Re-display menu with updated data
@@ -1488,36 +1582,70 @@ def handle_save_shard_changes_callback(call: telebot.types.CallbackQuery):
     try:
         # Prepare data for insertion/update (order must match SQL query)
         params = (
-            shard_date, # Date comes first for the VALUES part
+            shard_date, # date DATE PRIMARY KEY
+            data_to_save.get("Eruption Status"), # eruption_status BOOLEAN
+            data_to_save.get("Shard Color"), # shard_color TEXT
+            data_to_save.get("Realm"), # realm TEXT
+            data_to_save.get("Location"), # location TEXT
+            data_to_save.get("Reward Amount"), # reward_amount FLOAT
+            data_to_save.get("Reward Type"), # reward_type TEXT
+            data_to_save.get("Memory"), # memory TEXT
+            data_to_save.get("First Shard (MT)"), # first_shard_start_mt TEXT
+            data_to_save.get("Second Shard (MT)"), # first_shard_end_mt TEXT
+            data_to_save.get("Last Shard (MT)"), # second_shard_start_mt TEXT
+            # Missing new separate end times here: first_shard_end_mt, etc.
+            # Must map data_to_save["First Shard (MT)"] to start and end for new schema
+        )
+        
+        # --- RECONSTRUCTING PARAMS FOR NEW SCHEMA ---
+        # Need to reconstruct _start_mt and _end_mt from the combined string (First Shard (MT) etc.)
+        # and parse eruption_status from "yes"/"no" to True/False for DB.
+
+        first_start, first_end, _ = _split_time_range_for_db(data_to_save.get("First Shard (MT)"))
+        second_start, second_end, _ = _split_time_range_for_db(data_to_save.get("Second Shard (MT)"))
+        last_start, last_end, _ = _split_time_range_for_db(data_to_save.get("Last Shard (MT)"))
+        
+        db_eruption_status = True if data_to_save.get("Eruption Status") == "yes" else (False if data_to_save.get("Eruption Status") == "no" else None)
+
+        params = (
+            shard_date,
+            db_eruption_status,
             data_to_save.get("Shard Color"),
             data_to_save.get("Realm"),
             data_to_save.get("Location"),
-            data_to_save.get("Reward"),
+            data_to_save.get("Reward Amount"),
+            data_to_save.get("Reward Type"),
             data_to_save.get("Memory"),
-            data_to_save.get("First Shard (MT)"),
-            data_to_save.get("Second Shard (MT)"),
-            data_to_save.get("Last Shard (MT)"),
-            data_to_save.get("Eruption Status")
+            first_start, first_end,
+            second_start, second_end,
+            last_start, last_end
         )
-        
+
         with get_db() as conn:
             with conn.cursor() as cur:
                 cur.execute("""
                     INSERT INTO shard_events (
-                        date, shard_color, realm, location, reward, memory,
-                        first_shard_mt, second_shard_mt, last_shard_mt, eruption_status
-                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                        date, eruption_status, shard_color, realm, location, 
+                        reward_amount, reward_type, memory, 
+                        first_shard_start_mt, first_shard_end_mt, 
+                        second_shard_start_mt, second_shard_end_mt, 
+                        last_shard_start_mt, last_shard_end_mt
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                     ON CONFLICT (date) DO UPDATE SET
+                        eruption_status = EXCLUDED.eruption_status,
                         shard_color = EXCLUDED.shard_color,
                         realm = EXCLUDED.realm,
                         location = EXCLUDED.location,
-                        reward = EXCLUDED.reward,
+                        reward_amount = EXCLUDED.reward_amount,
+                        reward_type = EXCLUDED.reward_type,
                         memory = EXCLUDED.memory,
-                        first_shard_mt = EXCLUDED.first_shard_mt,
-                        second_shard_mt = EXCLUDED.second_shard_mt,
-                        last_shard_mt = EXCLUDED.last_shard_mt,
-                        eruption_status = EXCLUDED.eruption_status
-                """, params) # params directly matches the (date, + other fields)
+                        first_shard_start_mt = EXCLUDED.first_shard_start_mt,
+                        first_shard_end_mt = EXCLUDED.first_shard_end_mt,
+                        second_shard_start_mt = EXCLUDED.second_shard_start_mt,
+                        second_shard_end_mt = EXCLUDED.second_shard_end_mt,
+                        last_shard_start_mt = EXCLUDED.last_shard_start_mt,
+                        last_shard_end_mt = EXCLUDED.last_shard_end_mt
+                """, params)
                 conn.commit()
 
         bot.edit_message_text(
