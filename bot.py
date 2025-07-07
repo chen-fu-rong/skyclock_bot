@@ -1,4 +1,4 @@
-# bot.py - Shard events now display times in user's chosen format (12hr/24hr)
+# bot.py - Improved Telegram API error handling for graceful operation
 
 import os
 import pytz
@@ -687,8 +687,9 @@ def display_shard_info(chat_id: int, user_id: int, query_calendar_date_for_sky_d
         def get_sort_key(shard_data):
             date_obj = datetime.strptime(shard_data["Date"], "%Y-%m-%d").date()
             time_range_str = shard_data.get("First Shard (MT)")
-            start_datetime, _, _ = parse_shard_time_range_mmt(time_range_str, date_obj, fmt) # Pass fmt here for consistent sorting key generation
-            return start_datetime if start_datetime else datetime.min.replace(tzinfo=MYANMAR_TIMEZONE)
+            # Pass fmt here for consistent sorting key generation
+            start_datetime, _, _ = parse_shard_time_range_mmt(time_range_str, date_obj, fmt) 
+            return start_datetime if start_datetime else datetime.min.replace(tzinfo=MYANMAR_TIMEZONE) # Fallback for sorting errors
 
         relevant_shards_for_sky_day.sort(key=get_sort_key)
 
@@ -1408,7 +1409,7 @@ def send_shard_edit_menu(chat_id: int, user_id: int, message_id_to_edit: int | N
             )
         except telebot.apihelper.ApiTelegramException as e:
             if "message is not modified" in str(e).lower():
-                logger.info("Shard edit menu message not modified, skipping edit.")
+                logger.info("Shard message not modified, skipping edit.")
             else:
                 logger.error(f"Error editing shard edit menu: {e}", exc_info=True)
                 bot.send_message(chat_id, "⚠️ Error updating shard edit menu. Please try again.")
