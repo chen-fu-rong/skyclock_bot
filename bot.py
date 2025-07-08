@@ -520,30 +520,49 @@ def settings_menu(message: telebot.types.Message):
 
 @bot.message_handler(func=lambda msg: msg.text == QUESTS_BUTTON)
 def handle_daily_quests(message: telebot.types.Message):
-    """Displays the daily quests."""
+    """
+    Displays the daily quests. If not found in the DB, it will
+    trigger a live scrape as a fallback.
+    """
     update_last_interaction(message.from_user.id)
-    
     today = datetime.now(MYANMAR_TIMEZONE).date()
     
-    try:
-        with get_db() as conn:
-            with conn.cursor() as cur:
-                cur.execute("SELECT quests FROM daily_quests WHERE quest_date = %s", (today,))
-                result = cur.fetchone()
-        
-        if result and result[0]:
-            quests = result[0]
-            response_text = f"🗺️ **Daily Quests for {today.strftime('%B %d, %Y')}**:\n\n"
-            for quest in quests:
-                response_text += f"🔹 {quest}\n"
-        else:
-            response_text = "I couldn't find the quests for today. Please check back later. The data is updated automatically after the daily reset."
+    def get_quests_from_db():
+        """Helper to query the database for quests."""
+        try:
+            with get_db() as conn:
+                with conn.cursor() as cur:
+                    cur.execute("SELECT quests FROM daily_quests WHERE quest_date = %s", (today,))
+                    return cur.fetchone()
+        except Exception as e:
+            logger.error(f"Failed to fetch quests from DB: {e}", exc_info=True)
+            return None
 
+    # First, try to get quests from the database
+    result = get_quests_from_db()
+
+    # If not found, run the scraper and try again
+    if not result or not result[0]:
+        bot.send_message(message.chat.id, "Cache is empty. Please wait while I fetch live quest data...")
+        try:
+            # Trigger the proven-to-work scrape function
+            scrape_and_save_daily_quests()
+            # Try getting the data again
+            result = get_quests_from_db()
+        except Exception as e:
+            bot.send_message(message.chat.id, "Sorry, I encountered an error during the live fetch. Please try again later.")
+            return
+
+    # Now, display the result
+    if result and result[0]:
+        quests = result[0]
+        response_text = f"🗺️ **Daily Quests for {today.strftime('%B %d, %Y')}**:\n\n"
+        for quest in quests:
+            response_text += f"🔹 {quest}\n"
         bot.send_message(message.chat.id, response_text, parse_mode='Markdown')
-
-    except Exception as e:
-        logger.error(f"Failed to fetch daily quests from DB: {e}", exc_info=True)
-        bot.send_message(message.chat.id, "Sorry, I couldn't retrieve the daily quests right now.")
+    else:
+        # This message will now only show if both the DB and the live scrape fail
+        bot.send_message(message.chat.id, "Sorry, I couldn't find the quests for today, even after a live check.")
 
 # VVV ADD THIS ENTIRE FUNCTION FOR DEBUGGING VVV
 # VVV REPLACE YOUR OLD /gethtml FUNCTION WITH THIS NEW ONE VVV
