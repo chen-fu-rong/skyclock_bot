@@ -224,30 +224,35 @@ def scrape_traveling_spirit() -> dict:
 def scrape_and_save_daily_quests():
     """
     Scrapes the daily quests from the specified website and saves them to the database.
-    This version is updated for the new HTML structure using <button> tags.
+    This version is definitive, based on the debug_page.html file.
     """
     URL = "https://thatskyapplication.com/daily-guides"
     headers = {
-        'User-Agent': 'SkyClockBot/1.3 (Python/Requests; https://github.com/user/repo)'
+        'User-Agent': 'SkyClockBot/1.5 (Python/Requests; https://github.com/user/repo)'
     }
     try:
-        logger.info("Attempting to scrape daily quests with updated logic...")
+        logger.info("Attempting to scrape daily quests with definitive logic...")
         response = requests.get(URL, headers=headers, timeout=15)
         response.raise_for_status()
 
-        soup = BeautifulSoup(response.content, 'html.parser')
+        soup = BeautifulSoup(response.text, 'html.parser')
 
         quests = []
-        # The new structure has quests inside <button> tags within an <ol>.
-        # We can use a CSS selector to find them directly.
-        quest_buttons = soup.select("ol li button")
+        # 1. Find the exact "Quests" heading which acts as a reliable anchor.
+        quests_header = soup.find('h2', string='Quests')
 
-        if quest_buttons:
-            for button in quest_buttons:
-                quests.append(button.get_text(strip=True))
+        if quests_header:
+            # 2. Find the next element, which is the <ol> containing the quests.
+            quest_list_ol = quests_header.find_next_sibling('ol')
+            
+            if quest_list_ol:
+                # 3. Find all buttons within that specific list.
+                quest_buttons = quest_list_ol.find_all('button')
+                for button in quest_buttons:
+                    quests.append(button.get_text(strip=True))
 
         if not quests:
-            logger.warning("Could not find any quests using the new button-based selector. The website structure may have changed again.")
+            logger.warning("DEFINITIVE SCRAPER FAILED: Could not find quests even with the anchor-based logic. The site structure has likely changed again.")
             return
 
         today = datetime.now(MYANMAR_TIMEZONE).date()
