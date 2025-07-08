@@ -224,35 +224,30 @@ def scrape_traveling_spirit() -> dict:
 def scrape_and_save_daily_quests():
     """
     Scrapes the daily quests from the specified website and saves them to the database.
+    This version is updated for the new HTML structure using <button> tags.
     """
     URL = "https://thatskyapplication.com/daily-guides"
     headers = {
-        'User-Agent': 'SkyClockBot/1.1 (Python/Requests; https://github.com/user/repo)'
+        'User-Agent': 'SkyClockBot/1.3 (Python/Requests; https://github.com/user/repo)'
     }
     try:
-        logger.info("Attempting to scrape daily quests...")
+        logger.info("Attempting to scrape daily quests with updated logic...")
         response = requests.get(URL, headers=headers, timeout=15)
         response.raise_for_status()
 
         soup = BeautifulSoup(response.content, 'html.parser')
-        
-        # Find the container for daily quests
-        quest_container = soup.find('h2', string='Daily Quests')
-        if not quest_container:
-            logger.warning("Could not find the 'Daily Quests' h2 header.")
-            return
 
-        # Find the list of quests following the header
-        quest_list_elements = quest_container.find_next_siblings('div')
-        
         quests = []
-        for element in quest_list_elements:
-            quest_text_p = element.find('p', class_='text-gray-700')
-            if quest_text_p:
-                quests.append(quest_text_p.get_text(strip=True))
+        # The new structure has quests inside <button> tags within an <ol>.
+        # We can use a CSS selector to find them directly.
+        quest_buttons = soup.select("ol li button")
+
+        if quest_buttons:
+            for button in quest_buttons:
+                quests.append(button.get_text(strip=True))
 
         if not quests:
-            logger.warning("Could not find any quests on the page.")
+            logger.warning("Could not find any quests using the new button-based selector. The website structure may have changed again.")
             return
 
         today = datetime.now(MYANMAR_TIMEZONE).date()
