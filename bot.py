@@ -59,6 +59,7 @@ SKY_CLOCK_BUTTON = '🕒 Sky Clock'
 TRAVELING_SPIRIT_BUTTON = '✨ Traveling Spirit'
 WAX_EVENTS_BUTTON = '🕯 Wax Events'
 SHARDS_BUTTON = '💎 Shard Events'
+QUESTS_BUTTON = '🗺️ Daily Quests'
 SETTINGS_BUTTON = '⚙️ Settings'
 ADMIN_PANEL_BUTTON = '👤 Admin Panel'
 GRANDMA_BUTTON = '🧓 Grandma'
@@ -175,6 +176,15 @@ def init_db():
                     last_shard_end_mt TEXT
                 );
                 """)
+
+                logger.info("Creating table: daily_quests")
+                cur.execute("""
+                CREATE TABLE IF NOT EXISTS daily_quests (
+                    quest_date DATE PRIMARY KEY,
+                    quests TEXT[],
+                    last_updated TIMESTAMP DEFAULT NOW()
+                );
+                """)
                 
                 conn.commit()
                 logger.info("Database initialization complete.")
@@ -207,6 +217,61 @@ def scrape_traveling_spirit() -> dict:
         logger.error(f"FINAL DIAGNOSTIC SCRAPER FAILED: {e}", exc_info=True)
         return {"is_active": False, "error": "A critical error occurred during final diagnostics."}
 
+# ======================== WEB SCRAPING UTILITIES ============================
+# ... (scrape_traveling_spirit function)
+
+# VVV ADD THIS ENTIRE FUNCTION VVV
+def scrape_and_save_daily_quests():
+    """
+    Scrapes the daily quests from the specified website and saves them to the database.
+    """
+    URL = "https://thatskyapplication.com/daily-guides"
+    headers = {
+        'User-Agent': 'SkyClockBot/1.1 (Python/Requests; https://github.com/user/repo)'
+    }
+    try:
+        logger.info("Attempting to scrape daily quests...")
+        response = requests.get(URL, headers=headers, timeout=15)
+        response.raise_for_status()
+
+        soup = BeautifulSoup(response.content, 'html.parser')
+        
+        # Find the container for daily quests
+        quest_container = soup.find('h2', string='Daily Quests')
+        if not quest_container:
+            logger.warning("Could not find the 'Daily Quests' h2 header.")
+            return
+
+        # Find the list of quests following the header
+        quest_list_elements = quest_container.find_next_siblings('div')
+        
+        quests = []
+        for element in quest_list_elements:
+            quest_text_p = element.find('p', class_='text-gray-700')
+            if quest_text_p:
+                quests.append(quest_text_p.get_text(strip=True))
+
+        if not quests:
+            logger.warning("Could not find any quests on the page.")
+            return
+
+        today = datetime.now(MYANMAR_TIMEZONE).date()
+
+        with get_db() as conn:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    INSERT INTO daily_quests (quest_date, quests, last_updated)
+                    VALUES (%s, %s, NOW())
+                    ON CONFLICT (quest_date) DO UPDATE SET
+                        quests = EXCLUDED.quests,
+                        last_updated = NOW();
+                """, (today, quests))
+                conn.commit()
+        logger.info(f"Successfully scraped and saved {len(quests)} quests for {today}.")
+
+    except Exception as e:
+        logger.error(f"Failed to scrape or save daily quests: {e}", exc_info=True)
+# ^^^ ADD THIS ENTIRE FUNCTION ^^^
 # ======================== UTILITIES ============================
 def format_time(dt: datetime, fmt: str) -> str:
     """Formats a datetime object to 12hr or 24hr string."""
@@ -276,7 +341,8 @@ def send_main_menu(chat_id: int, user_id: int | None = None):
     markup = telebot.types.ReplyKeyboardMarkup(resize_keyboard=True)
     markup.row(SKY_CLOCK_BUTTON, TRAVELING_SPIRIT_BUTTON)
     markup.row(WAX_EVENTS_BUTTON, SHARDS_BUTTON)
-    markup.row(SETTINGS_BUTTON)
+    markup.row(QUESTS_BUTTON, SETTINGS_BUTTON)
+    
     if user_id and is_admin(user_id):
         markup.row(ADMIN_PANEL_BUTTON)
     bot.send_message(chat_id, "Main Menu:", reply_markup=markup)
@@ -454,6 +520,33 @@ def settings_menu(message: telebot.types.Message):
         
     _, fmt = user
     send_settings_menu(message.chat.id, fmt)
+
+@bot.message_handler(func=lambda msg: msg.text == QUESTS_BUTTON)
+def handle_daily_quests(message: telebot.types.Message):
+    """Displays the daily quests."""
+    update_last_interaction(message.from_user.id)
+    
+    today = datetime.now(MYANMAR_TIMEZONE).date()
+    
+    try:
+        with get_db() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT quests FROM daily_quests WHERE quest_date = %s", (today,))
+                result = cur.fetchone()
+        
+        if result and result[0]:
+            quests = result[0]
+            response_text = f"🗺️ **Daily Quests for {today.strftime('%B %d, %Y')}**:\n\n"
+            for quest in quests:
+                response_text += f"🔹 {quest}\n"
+        else:
+            response_text = "I couldn't find the quests for today. Please check back later. The data is updated automatically after the daily reset."
+
+        bot.send_message(message.chat.id, response_text, parse_mode='Markdown')
+
+    except Exception as e:
+        logger.error(f"Failed to fetch daily quests from DB: {e}", exc_info=True)
+        bot.send_message(message.chat.id, "Sorry, I couldn't retrieve the daily quests right now.")
 
 
 # --- SHARD EVENTS IMPLEMENTATION ---
