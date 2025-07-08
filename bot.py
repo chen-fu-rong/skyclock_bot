@@ -581,6 +581,61 @@ def get_html_for_debug(message: telebot.types.Message):
     except Exception as e:
         logger.error(f"DEBUG command /gethtml failed: {e}", exc_info=True)
         bot.send_message(message.chat.id, f"❌ Failed to download and send HTML. Error: {e}")
+
+    # VVV ADD THIS NEW DEBUG COMMAND VVV
+@bot.message_handler(commands=['testscrape'])
+def advanced_scrape_debug(message: telebot.types.Message):
+    """
+    An advanced debug command that shows the step-by-step result of scraping.
+    """
+    if not is_admin(message.from_user.id):
+        return
+
+    URL = "https://thatskyapplication.com/daily-guides"
+    headers = {
+        'User-Agent': 'SkyClockBot/1.6-DEBUG (Python/Requests; https://github.com/user/repo)'
+    }
+    bot.send_message(message.chat.id, "🔬 Running advanced scrape test...")
+    try:
+        response = requests.get(URL, headers=headers, timeout=15)
+        response.raise_for_status()
+
+        debug_report = "--- Scrape Test Report ---\n"
+        debug_report += f"Response Status: {response.status_code}\n\n"
+        
+        soup = BeautifulSoup(response.text, 'lxml')
+        
+        # Step 1: Find the header
+        quests_header = soup.find('h2', string='Quests')
+        debug_report += f"1. Found 'Quests' h2 header: {'Yes' if quests_header else 'No'}\n"
+
+        # Step 2: Find the list
+        if quests_header:
+            quest_list_ol = quests_header.find_next_sibling('ol')
+            debug_report += f"2. Found quest list <ol>: {'Yes' if quest_list_ol else 'No'}\n"
+            
+            # Step 3: Find the buttons
+            if quest_list_ol:
+                quest_buttons = quest_list_ol.find_all('button')
+                debug_report += f"3. Number of <button> tags found: {len(quest_buttons)}\n\n"
+                
+                quests = [btn.get_text(strip=True) for btn in quest_buttons]
+                debug_report += "🔍 Scraped Quests:\n"
+                if quests:
+                    for q in quests:
+                        debug_report += f"- {q}\n"
+                else:
+                    debug_report += "(None found)"
+            else:
+                debug_report += "3. Could not search for buttons because quest list was not found.\n"
+        else:
+            debug_report += "2. Could not search for quest list because header was not found.\n"
+
+        bot.send_message(message.chat.id, debug_report)
+
+    except Exception as e:
+        logger.error(f"DEBUG command /testscrape failed: {e}", exc_info=True)
+        bot.send_message(message.chat.id, f"❌ /testscrape command failed with error: {e}")
 # ^^^ ADD THIS ENTIRE FUNCTION FOR DEBUGGING ^^^
 
 # --- SHARD EVENTS IMPLEMENTATION ---
