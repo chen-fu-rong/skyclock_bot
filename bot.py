@@ -221,38 +221,35 @@ def scrape_traveling_spirit() -> dict:
 # ... (scrape_traveling_spirit function)
 
 # VVV ADD THIS ENTIRE FUNCTION VVV
+# VVV REPLACE THE CURRENT scrape_and_save_daily_quests FUNCTION VVV
 def scrape_and_save_daily_quests():
     """
-    Scrapes the daily quests from the specified website and saves them to the database.
-    This version is definitive, based on the debug_page.html file.
+    Scrapes the daily quests using the lxml parser for better reliability.
     """
     URL = "https://thatskyapplication.com/daily-guides"
     headers = {
-        'User-Agent': 'SkyClockBot/1.5 (Python/Requests; https://github.com/user/repo)'
+        'User-Agent': 'SkyClockBot/1.6 (Python/Requests; https://github.com/user/repo)'
     }
     try:
-        logger.info("Attempting to scrape daily quests with definitive logic...")
+        logger.info("Attempting to scrape daily quests with lxml parser...")
         response = requests.get(URL, headers=headers, timeout=15)
         response.raise_for_status()
 
-        soup = BeautifulSoup(response.text, 'html.parser')
+        # Use the 'lxml' parser
+        soup = BeautifulSoup(response.text, 'lxml')
 
         quests = []
-        # 1. Find the exact "Quests" heading which acts as a reliable anchor.
         quests_header = soup.find('h2', string='Quests')
 
         if quests_header:
-            # 2. Find the next element, which is the <ol> containing the quests.
             quest_list_ol = quests_header.find_next_sibling('ol')
-            
             if quest_list_ol:
-                # 3. Find all buttons within that specific list.
                 quest_buttons = quest_list_ol.find_all('button')
                 for button in quest_buttons:
                     quests.append(button.get_text(strip=True))
 
         if not quests:
-            logger.warning("DEFINITIVE SCRAPER FAILED: Could not find quests even with the anchor-based logic. The site structure has likely changed again.")
+            logger.warning("LXML SCRAPER FAILED: Could not find quests.")
             return
 
         today = datetime.now(MYANMAR_TIMEZONE).date()
@@ -270,7 +267,7 @@ def scrape_and_save_daily_quests():
         logger.info(f"Successfully scraped and saved {len(quests)} quests for {today}.")
 
     except Exception as e:
-        logger.error(f"Failed to scrape or save daily quests: {e}", exc_info=True)
+        logger.error(f"Failed to scrape or save daily quests with lxml: {e}", exc_info=True)
 # ^^^ ADD THIS ENTIRE FUNCTION ^^^
 # ======================== UTILITIES ============================
 def format_time(dt: datetime, fmt: str) -> str:
