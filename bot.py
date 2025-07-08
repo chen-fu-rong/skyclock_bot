@@ -544,33 +544,41 @@ def handle_daily_quests(message: telebot.types.Message):
         bot.send_message(message.chat.id, "Sorry, I couldn't retrieve the daily quests right now.")
 
 # VVV ADD THIS ENTIRE FUNCTION FOR DEBUGGING VVV
+# VVV REPLACE YOUR OLD /gethtml FUNCTION WITH THIS NEW ONE VVV
 @bot.message_handler(commands=['gethtml'])
 def get_html_for_debug(message: telebot.types.Message):
     """
-    A temporary debug command to download the raw HTML of the quests page.
+    A temporary debug command to download the raw HTML of the quests page
+    and send it directly to the user as a file.
     """
     if not is_admin(message.from_user.id):
         bot.send_message(message.chat.id, "You are not authorized to use this command.")
         return
 
     URL = "https://thatskyapplication.com/daily-guides"
+    file_path = "debug_page.html"
     headers = {
-        'User-Agent': 'SkyClockBot/1.3-DEBUG (Python/Requests; https://github.com/user/repo)'
+        'User-Agent': 'SkyClockBot/1.4-DEBUG (Python/Requests; https://github.com/user/repo)'
     }
-    bot.send_message(message.chat.id, "Attempting to download page HTML...")
+    bot.send_message(message.chat.id, "Attempting to download page HTML and send it as a file...")
     try:
         response = requests.get(URL, headers=headers, timeout=15)
         response.raise_for_status()
         
-        # Save the content to a file
-        with open("debug_page.html", "w", encoding="utf-8") as f:
+        # Save the content to a temporary file
+        with open(file_path, "w", encoding="utf-8") as f:
             f.write(response.text)
-            
-        bot.send_message(message.chat.id, "✅ Success! The page HTML has been saved to `debug_page.html` on the server. Please inspect this file.")
+        
+        # Send the file back to the user
+        with open(file_path, "rb") as f_to_send:
+            bot.send_document(message.chat.id, f_to_send)
+        
+        # Clean up the temporary file from the server
+        os.remove(file_path)
 
     except Exception as e:
         logger.error(f"DEBUG command /gethtml failed: {e}", exc_info=True)
-        bot.send_message(message.chat.id, f"❌ Failed to download HTML. Error: {e}")
+        bot.send_message(message.chat.id, f"❌ Failed to download and send HTML. Error: {e}")
 # ^^^ ADD THIS ENTIRE FUNCTION FOR DEBUGGING ^^^
 
 # --- SHARD EVENTS IMPLEMENTATION ---
